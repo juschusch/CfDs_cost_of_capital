@@ -5,7 +5,7 @@ import os
 from scipy.stats import lognorm
 
 run_name = "2030_without_CfD_v6" # Replace with correct run name
-results_directory = "CfDs_cost_of_capital/results/{}".format(run_name)
+results_directory = "results/{}".format(run_name)
 n = pypsa.Network(f"{results_directory}/networks/base_s_1_EP__2030.nc")  # Replace with correct network name
 scenario = 'cap' #'no_cfd'  # Replace with correct scenario name if needed
 
