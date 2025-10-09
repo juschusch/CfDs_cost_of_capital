@@ -1,10 +1,14 @@
+#%%
+
 import pypsa
 import numpy as np
 import matplotlib.pyplot as plt
 import os
 from scipy.stats import lognorm
+import seaborn as sns
+import pandas as pd
 
-run_name = "2030_without_CfD_v6" # Replace with correct run name
+run_name = "2030_without_CfD_v5" # Replace with correct run name
 results_directory = "results/{}".format(run_name)
 n = pypsa.Network(f"{results_directory}/networks/base_s_1_EP__2030.nc")  # Replace with correct network name
 scenario = 'cap' #'no_cfd'  # Replace with correct scenario name if needed
@@ -40,7 +44,7 @@ def get_hourly_generation(carrier):
 
 
 # Function to get hourly generation per MW of any carrier (essentially calculates average capacity factors)
-def get_hourly_generation_per_MW(carrier):
+def get_hourly_generation_per_MW(carrier, n=n):
     if carrier == 'offwind':
         gen_ac = n.generators[n.generators.carrier == 'offwind-ac']
         hg_ac = n.generators_t.p[gen_ac.index]
@@ -66,7 +70,7 @@ def get_hourly_generation_per_MW(carrier):
 
 # Function to get CO2 intensity of all carriers
 def CO2_intensity_carriers():
-    n_temp = pypsa.Network("pypsa-eur/resources/2030_without_CfD_v5/networks/base_s_1_elec_EP.nc")
+    n_temp = pypsa.Network("resources/2030_without_CfD_v5/networks/base_s_1_elec_EP.nc")
     co2_intensity = n_temp.carriers.co2_emissions
     return co2_intensity
 
@@ -85,13 +89,13 @@ def annual_CO2_emissions(year):
             print(f"Carrier {carrier} not found in the network generators.")
     return total_emissions
 
-co2_intensity = CO2_intensity_carriers()
-print(co2_intensity.index)
-print(n.generators.carrier)
+# co2_intensity = CO2_intensity_carriers()
+# print(co2_intensity.index)
+# print(n.generators.carrier)
 
-for carrier in co2_intensity.index:
-        if carrier in n.generators.carrier.unique():
-            print(f"Carrier {carrier} found in the network generators.")
+# for carrier in co2_intensity.index:
+#         if carrier in n.generators.carrier.unique():
+#             print(f"Carrier {carrier} found in the network generators.")
 
 # Function to calculate total CO2 emissions
 def total_CO2_emissions():
@@ -106,7 +110,7 @@ def total_CO2_emissions():
 
 
 # Get hourly marginal price at each node for any carrier
-def get_hourly_marginal_price(bus="DE0 0"):
+def get_hourly_marginal_price(bus="DE0 0", n=n):
     price_t = n.buses_t.marginal_price[bus]
     return price_t
 
@@ -218,17 +222,17 @@ def statistics(bus="DE0 0", n=n):
 # Plot comparison of key statistics for different scenarios
 def compare_statistics_plot(stat, save_to_file=True):
     run_name_nocfd = "2030_without_CfD_v5"
-    results_directory_nocfd = "pypsa-eur/results/{}".format(run_name_nocfd)
+    results_directory_nocfd = "results/{}".format(run_name_nocfd)
     n_nocfd = pypsa.Network(f"{results_directory_nocfd}/networks/base_s_1_EP__2030.nc")
     stats_nocfd = statistics(n=n_nocfd)
     stat_nocfd = stats_nocfd[stat]
     run_name_cfd = "2030_with_CfD_v4"
-    results_directory_cfd = "pypsa-eur/results/{}".format(run_name_cfd)
+    results_directory_cfd = "results/{}".format(run_name_cfd)
     n_cfd = pypsa.Network(f"{results_directory_cfd}/networks/base_s_1_EP__2030.nc")
     stats_cfd = statistics(n=n_cfd)
     stat_cfd = stats_cfd[stat]
     run_name_cap = "2030_withouth_CfD_v6"
-    results_directory_cap = "pypsa-eur/results/{}".format(run_name_cap)
+    results_directory_cap = "results/{}".format(run_name_cap)
     n_cap = pypsa.Network(f"{results_directory_cap}/networks/base_s_1_EP__2030.nc")
     stats_cap = statistics(n=n_cap)
     stat_cap = stats_cap[stat]
@@ -239,7 +243,7 @@ def compare_statistics_plot(stat, save_to_file=True):
     plt.xticks(rotation=45)
     plt.tight_layout()
     if save_to_file:
-        output_dir = "pypsa-eur/results/my_plots"
+        output_dir = "results/my_plots"
         os.makedirs(output_dir, exist_ok=True)
         filename = f'{output_dir}/comparison_{stat}.png'
         plt.savefig(filename, bbox_inches='tight')
@@ -250,10 +254,10 @@ def compare_statistics_plot(stat, save_to_file=True):
 
 
 # Annual revenue per MW of a carrier for a given year
-def annual_revenue_per_MW(carrier, year, bus="DE0 0"):
-    hourly_generation_per_MW = get_hourly_generation_per_MW(carrier)
+def annual_revenue_per_MW(carrier, year, bus="DE0 0", n=n):
+    hourly_generation_per_MW = get_hourly_generation_per_MW(carrier, n=n)
     hourly_generation_year_per_MW = hourly_generation_per_MW[hourly_generation_per_MW.index.year == year]
-    price = get_hourly_marginal_price(bus)
+    price = get_hourly_marginal_price(bus, n=n)
     price_year = price[price.index.year == year]
     rev_per_MW_year = (hourly_generation_year_per_MW.values.flatten() * price_year.values.flatten()).sum()
     return rev_per_MW_year
@@ -313,6 +317,69 @@ def plot_annual_revenue_per_MW(carrier, bus="DE0 0", save_to_file=True):
         print(f'Plot saved to {filename}')
     else:
         plt.show()
+
+
+# Violin plot for annual revenues of different carriers
+def plot_revenue_violin(carrier, bus="DE0 0", save_to_file=True):
+    years = n.generators_t.p.index.year.unique()
+    all_revenues = []
+    carrier_names_map = {
+        'offwind': "Offshore Wind",
+        'onwind': "Onshore Wind",
+        'solar': "Ground-Mounted Solar PV",
+        'solar rooftop': "Rooftop Solar PV"
+    }
+    carrier_name = carrier_names_map.get(carrier, carrier)
+
+    rev_no_cfd = [annual_revenue_per_MW(carrier, year, bus) for year in years]
+    rev_cfd = [annual_revenue_per_MW_with_CfD(carrier, year, bus) for year in years]
+    # rev_cap = annual_revenue_per_MW_with_Cap(carrier, year, bus) for year in years]
+    
+    # Define data for each scenario
+    scenarios = {
+        "No CfD": rev_no_cfd,
+        "Financial CfD": rev_cfd 
+        # "Capacity Component": rev_cap # Uncomment if you have this network
+    }
+
+    for name, revenues in scenarios.items():
+        for revenue in revenues:
+            all_revenues.append({'run_name': name, 'revenue': revenue})
+
+    df = pd.DataFrame(all_revenues)
+
+    plt.figure(figsize=(10, 6))
+    
+    carrier_colors = {
+        "Offshore Wind": mcblue,
+        "Onshore Wind": mcgreen,
+        "Ground-Mounted Solar PV": mcorange,
+        "Rooftop Solar PV": mcred
+    }
+
+    color = carrier_colors.get(carrier_name, (0.5, 0.5, 0.5))  # Default to grey if not found
+    palette_colors = {name: color for name in scenarios.keys()}
+
+    sns.violinplot(x='run_name', y='revenue', data=df, palette=palette_colors)
+    plt.title(f'Distribution of Annual Revenues per MW installed capacity of {carrier_name}', fontsize=12)
+    plt.xlabel(None)
+    plt.ylabel('Annual Revenue [€] per MW installed capacity', fontsize=12)
+    plt.grid(True)
+    plt.ylim(0, None)  # Start y-axis at 0
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+
+    if save_to_file:
+        output_dir = f'{results_directory}/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        # The filename should probably be more specific to the carrier
+        filename = f'{output_dir}/revenue_violin_plot_{carrier}.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
 
 
 # Annual revenue per MW for a given carrier and year under a standard financial CfD 
@@ -564,15 +631,15 @@ def plot_annual_CfD_payments(carrier, use_avg_rev_per_MWh=True, strike_price=0, 
 # Plot installed capacities of a carrier across different model iterations
 def plot_installed_capacities(carrier, save_to_file=True): 
     run_name_nocfd = "2030_without_CfD_v5"
-    results_directory_nocfd = "pypsa-eur/results/{}".format(run_name_nocfd)
+    results_directory_nocfd = "results/{}".format(run_name_nocfd)
     n_nocfd = pypsa.Network(f"{results_directory_nocfd}/networks/base_s_1_EP__2030.nc")
     c_inst_nocfd = n_nocfd.generators.p_nom_opt[n_nocfd.generators.carrier == carrier].sum()
     run_name_cfd = "2030_with_CfD_v4"
-    results_directory_cfd = "pypsa-eur/results/{}".format(run_name_cfd)
+    results_directory_cfd = "results/{}".format(run_name_cfd)
     n_cfd = pypsa.Network(f"{results_directory_cfd}/networks/base_s_1_EP__2030.nc")
     c_inst_cfd = n_cfd.generators.p_nom_opt[n_cfd.generators.carrier == carrier].sum()
     run_name_cap = "2030_withouth_CfD_v6"
-    results_directory_cap = "pypsa-eur/results/{}".format(run_name_cap)
+    results_directory_cap = "results/{}".format(run_name_cap)
     n_cap = pypsa.Network(f"{results_directory_cap}/networks/base_s_1_EP__2030.nc")
     c_inst_cap = n_cap.generators.p_nom_opt[n_cap.generators.carrier == carrier].sum()
     plt.figure(figsize=(8, 5))
@@ -601,7 +668,7 @@ def plot_installed_capacities(carrier, save_to_file=True):
     plt.ylabel('Installed Capacity [MW]')
     plt.grid(True)
     if save_to_file:
-        output_dir = 'pypsa-eur/results/my_plots'
+        output_dir = 'results/my_plots'
         os.makedirs(output_dir, exist_ok=True)
         filename = f'{output_dir}/installed_capacities_{carrier}.png'
         plt.savefig(filename, bbox_inches='tight')
@@ -628,6 +695,9 @@ for carrier in carriers:
 for carrier in carriers: #['offwind-ac', 'offwind-dc', 'offwind-float', 'onwind', 'solar', 'solar rooftop']:
     print(n.generators.capital_cost[n.generators.carrier == carrier])
     print(updated_capital_cost(carrier))
+
+for carrier in carriers:
+    plot_revenue_violin(carrier)
 
 # Only execute once all model iterations have been run succesfully
 for carrier in carriers:
@@ -764,20 +834,20 @@ print([round(x, 5) for x in risk_state_fin_CfD])
 
 #%%
 
-n_test = pypsa.Network("pypsa-eur/resources/2030_without_CfD_v5/networks/base_s_1_elec_EP.nc")
+n_test = pypsa.Network("resources/2030_without_CfD_v5/networks/base_s_1_elec_EP.nc")
 
 print(n_test.generators.p_nom_min)
 print(n_test.generators.p_nom_max)
 print(n_test.generators.p_nom_opt)
 
-n_test2 = pypsa.Network("pypsa-eur/results/2030_without_CfD_v5/networks/base_s_1_EP__2030.nc")
+n_test2 = pypsa.Network("results/2030_without_CfD_v5/networks/base_s_1_EP__2030.nc")
 
 print(n_test2.generators.p_nom_opt)
 print(n_test2.generators.p_nom_min)
 print(n_test2.generators.p_nom_max)
 
 
-n2 = pypsa.Network("pypsa-eur/results/2030_without_CfD_v5/networks/base_s_1_EP__2030.nc")
+n2 = pypsa.Network("results/2030_without_CfD_v5/networks/base_s_1_EP__2030.nc")
 
 print(n2.generators.p_nom_opt)
 print(n.generators.p_nom_opt)
