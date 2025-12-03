@@ -61,9 +61,16 @@ if __name__ == "__main__":
 
     st_primary_fraction = get(params["St_primary_fraction"], investment_year)
     dri_fraction = get(params["DRI_fraction"], investment_year)
+    required = ["Integrated steelworks", "Electric arc", "HVC", "Aluminium - primary production", "Aluminium - secondary production"]
+    missing = [c for c in required if c not in production.columns]
+    if missing:
+        raise KeyError(f"industrial_production_per_country.csv missing columns: {missing}")
     int_steel = production["Integrated steelworks"].sum()
-    fraction_persistent_primary = st_primary_fraction * total_steel.sum() / int_steel
-
+    if int_steel == 0:
+        logger.warning("Sum of 'Integrated steelworks' is zero — setting fraction_persistent_primary to 0 to avoid division by zero.")
+        fraction_persistent_primary = 0.0
+    else:
+        fraction_persistent_primary = st_primary_fraction * total_steel.sum() / int_steel
     dri = (
         dri_fraction * fraction_persistent_primary * production["Integrated steelworks"]
     )

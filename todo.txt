@@ -1,18 +1,18 @@
 To implement (in that order)
 - Access to UoC server (EWI Linux server as alternative)
-- Electricity-only model
-- Regionalization of generation capacities via fixed distribution share -> Resource classes clustered through avg windspeed regions
-- calculation of regionalized annual revenues 
-- regionalized adaptation of capital costs
+- (Check) Fix geothermal cost assumptions (or take it out) -> constrained to existing capacity, same for biomass
+- (Check) Regionalization of generation capacities via fixed distribution share -> Resource classes clustered through avg windspeed regions
 - Other risk sources: fluctuating fuel prices, commodity prices, demand --> random walk / built-in features (yearly variation sufficient)
 - Random walk only for commodity prices (percentage change simultaneously for all), then draw aggregated returns via random walk
-- demand elasticity for a smoother price duration curve: https://www.sciencedirect.com/science/article/pii/S014098832500307X
 - Value of Lost Load (VoLL) to prevent very high scarcity prices
+- demand elasticity for a smoother price duration curve: https://www.sciencedirect.com/science/article/pii/S014098832500307X
 - Demand data from the ENTSO-E ERAA dataset (Demand Data/Gross demand/DE00_Demand_gross_2030.csv) (There will be someone at YEEES who works on realistic demand curve projections)
 - Statistical sampling of aggregate returns from annual returns
 - Zeroth model iteration for initial cost of capital assumption
 - Analytic formulas for strike prices from Silkes paper (https://doi.org/10.1016/j.reseneeco.2025.101495) -> effectively regionalized pay-as-clear auctions 
 - Endogenous cost of capital approach (including impact of non-trivial strike prices)
+- calculation of regionalized annual revenues 
+- regionalized adaptation of capital costs
 - Let it run for different CO2 prices to check development of importance of CfDs in the ongoing transition
 - Consumer rent and a possible levying system
 (- Systemic effect different for nodal pricing model?)
@@ -20,3 +20,12 @@ To implement (in that order)
 
 Small stuff:
 - Fix CO2 emission calculation
+
+Contribute to PyPSA-EUR (after finishing the paper):
+- Add option to calculate resource classes based on area percentiles
+- Add option for constraining capacities across resource classes to solve_network.py
+
+
+Workflow for electricity-only network optimization:
+- Run command "snakemake -call solve_elec_networks --configfile config\name.yaml --scheduler-ilp-solver GUROBI --cores N
+- Analyze the resulting NC file with analysis.ipynb

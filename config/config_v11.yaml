@@ -1,7 +1,6 @@
-# Version 7: Test elec-only and weather data
-# Returns only renewable and geothermal production for April 2000
-# Installed fossil capacities are those from the input network but no dispatch
-# Test again with sector-coupled model
+  # Version 10: Test how to get zero initial capacities
+
+
 
 
 logging:
@@ -9,7 +8,7 @@ logging:
 solve_network: solve
 
 run: 
-  name: "Elec-only_test"
+  name: "Land-use-constraints_test"
   scenarios:
     enable: false
   shared_cutouts: true 
@@ -44,19 +43,22 @@ snapshots:
   inclusive: 'left'
 
 enable:
-  # retrieve: false
+  retrieve: true
   build_cutout: false
   retrieve_cutout: false
 
 electricity:
   extendable_carriers:
-    Generator: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, OCGT, CCGT, coal, lignite, geothermal, biomass]
+    Generator: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, OCGT, CCGT, coal, lignite] #, geothermal, biomass]
     StorageUnit: [battery, H2]
-    # Store: [battery, H2] # No charging/discharging limtis
+    Store: [] # No charging/discharging limtis
     Link: [H2 pipeline]
-  everywhere_powerplants: [nuclear, oil, OCGT, CCGT, coal, lignite, geothermal, biomass] # Adds generators with zero capacity at every node, important to make them extendable
-  # conventional_carriers: [nuclear, oil, OCGT, CCGT, coal, lignite, geothermal, biomass] # Adds existing conventional power plants from powerplants.csv
-  renewable_carriers: [solar, onwind, offwind-ac, offwind-dc, offwind-float, hydro] # Includes listed renewable generator types in optimization
+  everywhere_powerplants: [] #nuclear, oil, OCGT, CCGT, coal, lignite] # Adds generators with zero capacity at every node, important to make them extendable
+  conventional_carriers: [geothermal, biomass] # Adds existing conventional power plants from as lower bound powerplants.csv
+  renewable_carriers: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float] # Includes listed renewable generator types in optimization
+
+  estimate_renewable_capacities:
+    enable: false
 
 atlite:
   cutout_directory: cutouts
@@ -77,6 +79,21 @@ atlite:
   #     # features: [] 
   #     # sarah_dir: ""
   #   # pass
+
+renewable:
+  onwind:
+    resource_classes: 10
+  offwind-ac:
+    resource_classes: 4
+  offwind-dc:
+    resource_classes: 4 # 1 is enough
+  offwind-float:
+    resource_classes: 4 # 1 is enough
+  solar:
+    resource_classes: 10
+  solar-hsat:
+    resource_classes: 10 # Does matter only in a greenfield model without any initial capacities
+  
 
 # conventional:
 #   dynamic_fuel_price: true # Refer to the CSV file “data/validation/monthly_fuel_price.csv” -> Do I have to generate that manually?
@@ -139,6 +156,8 @@ clustering:
     # noisy_costs: true
 
 solving:
+  options:
+    custom_extra_functionality: "../data/resource_class_share_constraint.py"
   solver:
     name: gurobi
     options: gurobi-default

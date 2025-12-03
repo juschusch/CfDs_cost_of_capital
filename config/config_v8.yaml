@@ -1,14 +1,13 @@
-# Version 8: Implement resource classes for Regionalization
-# -> Check whether these automatically yield a good distribution across different
-# resource classes or whether external constraints have to be implemented
-# Adapt analysis_functions accordingly
+# Version 8: Test sector-coupling again in comparison to elec-only for  April 2000
+# Fails for year 2000, likely due to lack of input data for industrial production
+
 
 logging:
   level: INFO
 solve_network: solve
 
 run: 
-  name: "Resource-class_test"
+  name: "Sector-coupling_test"
   scenarios:
     enable: false
   shared_cutouts: true 
@@ -29,16 +28,17 @@ scenario:
   # - EP # Add cost for a carbon-dioxide price configured in costs: emission_prices: co2 to marginal_cost of generators (other emission types listed in network.carriers possible as well)
   # - CCL # Add minimum and maximum levels of generator nominal capacity per carrier for individual countries. These can be specified in the file linked at electricity: agg_p_nom_limits in the configuration. File defaults to data/agg_p_nom_minmax.csv.
   # - EQ0.5 # Require each country or node to on average produce a minimal share of its total consumption itself. Example: EQ0.5c demands each country to produce on average at least 50% of its consumption; EQ0.5 demands each node to produce on average at least 50% of its consumption.
-  # planning_horizons: # Demand projections for sector-coupling only
-  # - 2030
+  planning_horizons: # Demand projections for sector-coupling only
+  - 2030
 
 countries:
 - DE
 
 snapshots:
-  start: "2000-04-01" 
-  end: "2000-04-08" # For testing 
-  # end: "2025-01-01" # Full run
+  start: "2013-04-01" # For testing
+  end: "2013-05-01" 
+  # start: "2000-01-01" # Full run
+  # end: "2025-01-01" 
   inclusive: 'left'
 
 enable:
@@ -52,8 +52,8 @@ electricity:
     StorageUnit: [battery, H2]
     # Store: [battery, H2] # No charging/discharging limtis
     Link: [H2 pipeline]
-  everywhere_powerplants: [nuclear, oil, OCGT, CCGT, coal, lignite, geothermal, biomass] # Adds generators with zero capacity at every node, important to make them extendable
-  # conventional_carriers: [nuclear, oil, OCGT, CCGT, coal, lignite, geothermal, biomass] # Adds existing conventional power plants from powerplants.csv
+  # everywhere_powerplants: [nuclear, oil, OCGT, CCGT, coal, lignite, geothermal, biomass] # Adds generators with zero capacity at every node, important to make them extendable
+  conventional_carriers: [nuclear, oil, OCGT, CCGT, coal, lignite, geothermal, biomass] # Adds existing conventional power plants from powerplants.csv
   renewable_carriers: [solar, onwind, offwind-ac, offwind-dc, offwind-float, hydro] # Includes listed renewable generator types in optimization
 
 atlite:
@@ -75,21 +75,6 @@ atlite:
   #     # features: [] 
   #     # sarah_dir: ""
   #   # pass
-
-renewable:
-  onwind:
-    resource_classes: 10
-  offwind-ac:
-    resource_classes: 4
-  offwind-dc:
-    resource_classes: 4
-  offwind-float:
-    resource_classes: 4
-  solar:
-    resource_classes: 10
-  solar-hsat:
-    resource_classes: 10
-  
 
 # conventional:
 #   dynamic_fuel_price: true # Refer to the CSV file “data/validation/monthly_fuel_price.csv” -> Do I have to generate that manually?

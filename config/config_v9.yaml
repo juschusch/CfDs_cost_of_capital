@@ -1,15 +1,18 @@
-# Version 7: Test elec-only and weather data
-# Returns only renewable and geothermal production for April 2000
-# Installed fossil capacities are those from the input network but no dispatch
-# Test again with sector-coupled model
-
+# Version 9: Implement resource classes for Regionalization
+# Results slightly different to version without resource classes
+# Still very much dominated by geothermal electricity
+# -> Due to very unrealistically low marginal and zero capital costs
+# resource classes or whether external constraints have to be implemented
+# -> Distributed to percentiles of capacity factors 
+# Adapt analysis_functions accordingly
+# Why is p_nom_min the existing capacity here? -> Still uses existing capacities as lower bounds
 
 logging:
   level: INFO
 solve_network: solve
 
 run: 
-  name: "Elec-only_test"
+  name: "Resource-class_test"
   scenarios:
     enable: false
   shared_cutouts: true 
@@ -77,6 +80,21 @@ atlite:
   #     # features: [] 
   #     # sarah_dir: ""
   #   # pass
+
+renewable:
+  onwind:
+    resource_classes: 10
+  offwind-ac:
+    resource_classes: 4
+  offwind-dc:
+    resource_classes: 4 # 1 is enough
+  offwind-float:
+    resource_classes: 4 # 1 is enough
+  solar:
+    resource_classes: 10
+  solar-hsat:
+    resource_classes: 10 # Does not matter
+  
 
 # conventional:
 #   dynamic_fuel_price: true # Refer to the CSV file “data/validation/monthly_fuel_price.csv” -> Do I have to generate that manually?

@@ -203,29 +203,17 @@ if __name__ == "__main__":
     I = np.ceil(I)
     cf_by_bus = capacity_factor * I.where(I > 0)
 
-    # Calculate bin edges based on percentiles of regions
-    cf_by_bus_sorted = np.sort(cf_by_bus.values.flatten())
-    bins = xr.DataArray(
-        np.percentile(
-            cf_by_bus_sorted[~np.isnan(cf_by_bus_sorted)],
-            np.linspace(0, 100, nbins + 1),
-        ),
-        dims=["bin"],
+    epsilon = 1e-3
+    cf_min, cf_max = (
+        cf_by_bus.min(dim=["x", "y"]) - epsilon,
+        cf_by_bus.max(dim=["x", "y"]) + epsilon,
     )
-
-    # epsilon = 1e-3
-    # cf_min, cf_max = (
-    #     cf_by_bus.min(dim=["x", "y"]) - epsilon,
-    #     cf_by_bus.max(dim=["x", "y"]) + epsilon,
-    # )
-    # normed_bins = xr.DataArray(np.linspace(0, 1, nbins + 1), dims=["bin"])
-    # bins = cf_min + (cf_max - cf_min) * normed_bins
+    normed_bins = xr.DataArray(np.linspace(0, 1, nbins + 1), dims=["bin"])
+    bins = cf_min + (cf_max - cf_min) * normed_bins
 
     cf_by_bus_bin = cf_by_bus.expand_dims(bin=range(nbins))
-    # lower_edges = bins[:, :-1]
-    # upper_edges = bins[:, 1:]
-    lower_edges = xr.DataArray(bins[:-1].values, dims="bin", coords={"bin": range(nbins)})
-    upper_edges = xr.DataArray(bins[1:].values, dims="bin", coords={"bin": range(nbins)})
+    lower_edges = bins[:, :-1]
+    upper_edges = bins[:, 1:]
     class_masks = (cf_by_bus_bin >= lower_edges) & (cf_by_bus_bin < upper_edges)
 
     if nbins == 1:
