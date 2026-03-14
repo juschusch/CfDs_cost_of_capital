@@ -1,0 +1,163 @@
+# Version 8: Implement resource classes for Regionalization
+# -> Check whether these automatically yield a good distribution across different
+# resource classes or whether external constraints have to be implemented
+# Adapt analysis_functions accordingly
+
+logging:
+  level: INFO
+solve_network: solve
+
+run: 
+  name: "Resource-class_test"
+  scenarios:
+    enable: false
+  shared_cutouts: true 
+
+foresight: overnight # i.e., greenfield approach
+
+scenario:
+  clusters:
+  - 1 # 13 # One per federal state (excl. city states)
+  technology: [onwind, offwind-ac, offwind-dc, solar]
+  opts:
+  - EP # , EQ0.5]
+  # - onwind+c0.5 # This reduces capital costs of onwind to 50 % of its original value
+  # - offwind-ac+c0.5 # This reduces capital costs of offwind-ac to 50 % of its original value
+  # - offwind-dc+c0.5 # This reduces capital costs of offwind-dc to 50 % of its original value
+  # - solar+c0.5 # This reduces capital costs of solar to 50 % of its original value
+  # - hydro+c0.5 # This reduces capital costs of hydro to 50 % of its original value # Include hydro in CfD? 
+  # - EP # Add cost for a carbon-dioxide price configured in costs: emission_prices: co2 to marginal_cost of generators (other emission types listed in network.carriers possible as well)
+  # - CCL # Add minimum and maximum levels of generator nominal capacity per carrier for individual countries. These can be specified in the file linked at electricity: agg_p_nom_limits in the configuration. File defaults to data/agg_p_nom_minmax.csv.
+  # - EQ0.5 # Require each country or node to on average produce a minimal share of its total consumption itself. Example: EQ0.5c demands each country to produce on average at least 50% of its consumption; EQ0.5 demands each node to produce on average at least 50% of its consumption.
+  # planning_horizons: # Demand projections for sector-coupling only
+  # - 2030
+
+countries:
+- DE
+
+snapshots:
+  start: "2000-04-01" 
+  end: "2000-04-08" # For testing 
+  # end: "2025-01-01" # Full run
+  inclusive: 'left'
+
+enable:
+  # retrieve: false
+  build_cutout: false
+  retrieve_cutout: false
+
+electricity:
+  extendable_carriers:
+    Generator: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, OCGT, CCGT, coal, lignite, geothermal, biomass]
+    StorageUnit: [battery, H2]
+    # Store: [battery, H2] # No charging/discharging limtis
+    Link: [H2 pipeline]
+  everywhere_powerplants: [nuclear, oil, OCGT, CCGT, coal, lignite, geothermal, biomass] # Adds generators with zero capacity at every node, important to make them extendable
+  # conventional_carriers: [nuclear, oil, OCGT, CCGT, coal, lignite, geothermal, biomass] # Adds existing conventional power plants from powerplants.csv
+  renewable_carriers: [solar, onwind, offwind-ac, offwind-dc, offwind-float, hydro] # Includes listed renewable generator types in optimization
+
+atlite:
+  cutout_directory: cutouts
+  default_cutout: de-2000_24-era5
+  # nprocesses: 16
+  # show_progress: true
+  # cutouts:
+  #   # use 'base' to determine geographical bounds and time span from config
+  #   # base:
+  #   #   module: era5
+    # de-2000_24-era5:
+    #   module: [era5] # in priority order
+    #   x: [5., 16.] # Restrict to Germany
+    #   y: [47., 56.]
+    #   dx: 0.3
+    #   dy: 0.3
+    #   time: ["2000-01-01", "2024-12-31"]
+  #     # features: [] 
+  #     # sarah_dir: ""
+  #   # pass
+
+renewable:
+  onwind:
+    resource_classes: 10
+  offwind-ac:
+    resource_classes: 4
+  offwind-dc:
+    resource_classes: 4
+  offwind-float:
+    resource_classes: 4
+  solar:
+    resource_classes: 10
+  solar-hsat:
+    resource_classes: 10
+  
+
+# conventional:
+#   dynamic_fuel_price: true # Refer to the CSV file “data/validation/monthly_fuel_price.csv” -> Do I have to generate that manually?
+
+# sector:
+#   regional_co2_sequestration_potential: 
+#     enable: false # To prevent a bug
+#   gas_network: false # Should not matter for copperplate simulation
+#   gas_distribution_grid: false # ""
+  
+
+costs:
+  year: 2030
+  # Update WACC based on reduced revenue variability due to CfDs
+  # fill_values:
+  #   discount rate: 0.07
+  # overwrites: 
+  #   discount rate:
+      # onwind: 0.0654 #3875579586808
+      # offwind: 0.0358 #70966495932333
+      # solar: 0.0439 #79030499805418
+      # solar-rooftop: 0.0295 #1613649294821
+  # capital_cost:
+  #   onwind: 976588.612835
+  #   offwind-ac: 1.385671e+06
+  #   offwind-dc: 1.451712e+06
+  #   offwind-float: 2.002911e+06
+  #   solar: 335421.439964
+  #   solar-rooftop: 347953.594898
+  emission_prices:
+    enable: true
+    co2: 100
+    # co2_monthly_price: true # Add monthly cost for a carbon-dioxide price based on historical values built by the rule build_monthly_prices
+
+
+# Updated discount rates:
+# onwind: 0.06543875579586808
+# offwind: 0.03570966495932333
+# solar: 0.04379030499805418
+# solar rooftop: 0.02951613649294821
+
+# Updated capital costs:
+# onwind: 976588.612835
+# offwind: 2446390
+# solar: 335421.439964
+# solar-rooftop: 347953.594898
+
+
+clustering: 
+  mode: busmap # administrative # Uses NUTS3 regions for clustering (Kreisebene) 
+  administrative:
+    level: 1
+  focus_weights: false
+  # copperplate_regions: [DE]
+  temporal:
+    resolution_elec: false # Can re-sample the resultion to 'nH' by averaging over n hours
+
+# solving:
+  # options:
+    # noisy_costs: true
+
+solving:
+  solver:
+    name: gurobi
+    options: gurobi-default
+
+plotting:
+  map:
+    boundaries: [5, 16, 47, 56] # Germany
+  balance_timeseries:
+    monthly: false
