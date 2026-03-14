@@ -1,31 +1,41 @@
 To implement (in that order)
-- Access to UoC server (EWI Linux server as alternative)
+- (Check) Access to UoC server (EWI Linux server as alternative)
 - (Check) Fix geothermal cost assumptions (or take it out) -> constrained to existing capacity, same for biomass
 - (Check) Regionalization of generation capacities via fixed distribution share -> Resource classes clustered through avg windspeed regions
-- Other risk sources: fluctuating fuel prices, commodity prices, demand --> random walk / built-in features (yearly variation sufficient)
-- Random walk only for commodity prices (percentage change simultaneously for all), then draw aggregated returns via random walk
-- Value of Lost Load (VoLL) to prevent very high scarcity prices
-- demand elasticity for a smoother price duration curve: https://www.sciencedirect.com/science/article/pii/S014098832500307X
-- Demand data from the ENTSO-E ERAA dataset (Demand Data/Gross demand/DE00_Demand_gross_2030.csv) (There will be someone at YEEES who works on realistic demand curve projections)
-- Statistical sampling of aggregate returns from annual returns
-- Zeroth model iteration for initial cost of capital assumption
-- Analytic formulas for strike prices from Silkes paper (https://doi.org/10.1016/j.reseneeco.2025.101495) -> effectively regionalized pay-as-clear auctions 
-- Endogenous cost of capital approach (including impact of non-trivial strike prices)
-- calculation of regionalized annual revenues 
-- regionalized adaptation of capital costs
+- (Check) Other risk sources: fluctuating fuel prices, commodity prices, demand --> random walk / built-in features (yearly variation sufficient)
+- (Check) Different scenarios for commodity prices (percentage change simultaneously for all)
+- (Check) Value of Lost Load (VoLL) to prevent very high scarcity prices -> add custom generator with zero investment and VOLL marginal cost
+- (Optional) demand elasticity for a smoother price duration curve: https://www.sciencedirect.com/science/article/pii/S014098832500307X
+- (Optional) Demand data from the ENTSO-E ERAA dataset (Demand Data/Gross demand/DE00_Demand_gross_2030.csv) (There will be someone at YEEES who works on realistic demand curve projections)
+- (Check) Zeroth model iteration for initial cost of capital assumption
+- (Check) Statistical sampling of aggregate returns from annual returns via random walk between commodity price years
+- (Discarded) Analytic formulas for strike prices from Silkes paper (https://doi.org/10.1016/j.reseneeco.2025.101495) -> effectively regionalized pay-as-clear auctions 
+- (Check) Endogenous cost of capital approach (including impact of non-trivial strike prices)
+- (Check) calculation of regionalized annual revenues 
+- (Check) Fix optimal onshore wind values
+- (Check) Fix offshore potentials
+- (Check) Regionalized adaptation of capital costs
+- First model iteration
+- Calculation of MCS-based CfD revenues
+- Second Model iteration for different CfD regimes
+- Fix CO2 emission calculation
 - Let it run for different CO2 prices to check development of importance of CfDs in the ongoing transition
 - Consumer rent and a possible levying system
 (- Systemic effect different for nodal pricing model?)
 
 
-Small stuff:
-- Fix CO2 emission calculation
-
 Contribute to PyPSA-EUR (after finishing the paper):
-- Add option to calculate resource classes based on area percentiles
+- Add option to calculate resource classes based on area percentiles -> in build_renewable_profiles.py
 - Add option for constraining capacities across resource classes to solve_network.py
+- MCS-based revenue calculation? 
+- Truly endogenous cost of capital? 
 
 
 Workflow for electricity-only network optimization:
 - Run command "snakemake -call solve_elec_networks --configfile config\name.yaml --scheduler-ilp-solver GUROBI --cores N
-- Analyze the resulting NC file with analysis.ipynb
+- Analyze the resulting NC file with analysis.ipynb based on analysis_functions.py
+
+
+Discount rate update for elec-only: add_electricity.py directly takes capital_cost from costs_2030.csv, not the discount rates 
+
+Discuss price risk as main unpredictable long-term uncertainty for investors 

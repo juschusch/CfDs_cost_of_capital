@@ -30,7 +30,7 @@ dependencies:
 - pytables
 - lxml
 - numpy
-- pandas>=2.1
+- pandas>=2.1,<2.2
 - geopandas>=1
 - xarray>=2024.03.0,<2025.07.0
 - rioxarray

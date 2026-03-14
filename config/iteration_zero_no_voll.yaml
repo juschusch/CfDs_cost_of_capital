@@ -1,0 +1,222 @@
+# Version Iteration Zero No VOLL: like iteration zero v3 but without VOLL
+
+# Iteration zero: Default discount rate of 0.07 as WACC for all resource classes 
+# Iteration one: calibrated WACC for all rcs based on revenue variability without CfDs 
+# Iteration two: reduced WACC for all rcs based on revenue variability with CfDs
+
+# "Risk-free" discount rates from https://doi.org/10.1016/j.rser.2025.116570
+# Using calculated Macro risks + technical and performance risks, but not market risks, for Germany
+# offwind: 0.0575 (4951409354971)
+# onwind: 0.0529 (8558479441971)
+# solar: 0.0486 (5639107564975)
+
+logging:
+  level: INFO
+solve_network: solve
+
+run: 
+  name: "0_Iteration_Zero_No_VOLL"
+  scenarios:
+    enable: false
+  shared_cutouts: true 
+
+foresight: overnight # i.e., greenfield approach
+
+scenario:
+  clusters:
+  - 1 # 13 # One per federal state (excl. city states)
+  technology: [onwind, offwind-ac, offwind-dc, solar]
+  opts:
+  - EP # , EQ0.5]
+  # - onwind+c0.5 # This reduces capital costs of onwind to 50 % of its original value
+  # - offwind-ac+c0.5 # This reduces capital costs of offwind-ac to 50 % of its original value
+  # - offwind-dc+c0.5 # This reduces capital costs of offwind-dc to 50 % of its original value
+  # - solar+c0.5 # This reduces capital costs of solar to 50 % of its original value
+  # - hydro+c0.5 # This reduces capital costs of hydro to 50 % of its original value # Include hydro in CfD? 
+  # - EP # Add cost for a carbon-dioxide price configured in costs: emission_prices: co2 to marginal_cost of generators (other emission types listed in network.carriers possible as well)
+  # - CCL # Add minimum and maximum levels of generator nominal capacity per carrier for individual countries. These can be specified in the file linked at electricity: agg_p_nom_limits in the configuration. File defaults to data/agg_p_nom_minmax.csv.
+  # - EQ0.5 # Require each country or node to on average produce a minimal share of its total consumption itself. Example: EQ0.5c demands each country to produce on average at least 50% of its consumption; EQ0.5 demands each node to produce on average at least 50% of its consumption.
+  # planning_horizons: # Demand projections for sector-coupling only
+  # - 2030
+
+countries:
+- DE
+
+snapshots:
+  # start: "2000-01-01" # For testing
+  # end: "2001-01-01" 
+  start: "1982-01-01" # Full run
+  end: "2017-01-01" 
+  inclusive: 'left'
+
+enable:
+  retrieve: true
+  build_cutout: false
+  retrieve_cutout: false
+
+electricity:
+  extendable_carriers:
+    Generator: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, OCGT, CCGT, coal, lignite] #, load] #, geothermal, biomass]
+    StorageUnit: [battery, H2]
+    Store: [] # No charging/discharging limtis
+    Link: [H2 pipeline]
+  # custom_powerplants: data/custom_powerplants.csv # Used to add custom existing generators in brownfield models
+  everywhere_powerplants: #[load] #nuclear, oil, OCGT, CCGT, coal, lignite] # Adds generators with zero capacity at every node, important to make them extendable
+  conventional_carriers: [geothermal, biomass] # Adds existing conventional power plants from as lower bound powerplants.csv
+  renewable_carriers: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, hydro] # Includes listed renewable generator types in optimization
+
+  estimate_renewable_capacities:
+    enable: false
+
+atlite:
+  cutout_directory: cutouts
+  default_cutout: de-1982_2016-era5
+  # nprocesses: 16
+  # show_progress: true
+  # cutouts:
+  #   # use 'base' to determine geographical bounds and time span from config
+  #   # base:
+  #   #   module: era5
+    # de-1982-2016-era5:
+    #   module: [era5] # in priority order
+    #   x: [5., 16.] # Restrict to Germany
+    #   y: [47., 56.]
+    #   dx: 0.3
+    #   dy: 0.3
+    #   time: ["1982-01-01", "2017-01-01"]
+  #     # features: [] 
+  #     # sarah_dir: ""
+  #   # pass
+
+renewable:
+  onwind:
+    resource_classes: 10
+  offwind-ac:
+    resource_classes: 4
+    capacity_per_sqkm: 6.5 # Default assumption of 2 is unrealistically low
+  offwind-dc:
+    resource_classes: 4
+    capacity_per_sqkm: 6.5 # Taken from https://maritime-spatial-planning.ec.europa.eu/practices/capacity-densities-european-offshore-wind-farms for DE
+  offwind-float:
+    resource_classes: 4 
+    capacity_per_sqkm: 6.5
+  solar:
+    resource_classes: 10
+  solar-hsat:
+    resource_classes: 10 
+  
+
+conventional:
+  dynamic_fuel_price: scenarios # random_walk # Refer to the CSV file “data/validation/monthly_fuel_price.csv” for "historical"
+  dfp_fuel_types: [gas] # Carriers for which to apply dynamic fuel prices (only relevant if dynamic_fuel_price is 'scenarios' or 'random_walk')
+  scn_distribution: [[0.2, 0.5], [0.6, 1.0], [0.2, 2.0]] # Specified as a list of lists - first number: share of timeslices (have to add up to 1), second number: multiplier of the default fuel price (only relevant if dynamic_fuel_price is 'scenarios')
+  # rw_random_seed: 140523498 # Fixed seed for the random number generator for reproducibility (only relevant if dynamic_fuel_price is 'random_walk')
+  # rw_random_walk_stddev: 0.05 # Standard deviation of the random walk in fraction of the fuel price (only relevant if dynamic_fuel_price is 'random_walk')
+    
+
+# sector:
+#   regional_co2_sequestration_potential: 
+#     enable: false # To prevent a bug
+#   gas_network: false # Should not matter for copperplate simulation
+#   gas_distribution_grid: false # ""
+  
+
+costs:
+  year: 2030
+  # Update WACC based on reduced revenue variability due to CfDs
+  # fill_values:
+  #   discount rate: 0.07
+  # overwrites: 
+  #   discount rate:
+  #     onwind:
+  #       DE0 0 0: 0.03
+  #       DE0 0 1: 0.03
+  #       DE0 0 2: 0.03
+  #       DE0 0 3: 0.04
+  #       DE0 0 4: 0.04
+  #       DE0 0 5: 0.04
+  #       DE0 0 6: 0.05
+  #       DE0 0 7: 0.05
+  #       DE0 0 8: 0.05
+  #       DE0 0 9: 0.07
+  #     offwind-ac:
+  #       DE0 0 0: 0.04
+  #       DE0 0 1: 0.04
+  #       DE0 0 2: 0.04
+  #       DE0 0 3: 0.04
+  #     offwind-dc:
+  #       DE0 0 0: 0.04
+  #       DE0 0 1: 0.04
+  #       DE0 0 2: 0.04
+  #       DE0 0 3: 0.04
+  #     offwind-float:
+  #       DE0 0 0: 0.04
+  #       DE0 0 1: 0.04
+  #       DE0 0 2: 0.04
+  #       DE0 0 3: 0.04
+  #     solar:
+  #       DE0 0 0: 0.04
+  #       DE0 0 1: 0.04
+  #       DE0 0 2: 0.04
+  #       DE0 0 3: 0.04
+  #       DE0 0 4: 0.04
+  #       DE0 0 5: 0.04
+  #       DE0 0 6: 0.04
+  #       DE0 0 7: 0.04
+  #       DE0 0 8: 0.04
+  #       DE0 0 9: 0.04
+  #     solar-hsat:
+  #       DE0 0 0: 0.04
+  #       DE0 0 1: 0.04
+  #       DE0 0 2: 0.04
+  #       DE0 0 3: 0.04
+  #       DE0 0 4: 0.04
+  #       DE0 0 5: 0.04
+  #       DE0 0 6: 0.04
+  #       DE0 0 7: 0.04
+  #       DE0 0 8: 0.04
+  #       DE0 0 9: 0.04
+  # capital_cost:
+  #   load: 0.0 # To prevent load shedding costs
+  #   onwind: 976588.612835
+  #   offwind-ac: 1.385671e+06
+  #   offwind-dc: 1.451712e+06
+  #   offwind-float: 2.002911e+06
+  #   solar: 335421.439964
+  #   solar-hsat: 347953.594898
+  # marginal_cost:
+  #   load: 4000.0 # Value of Lost Load (VoLL) to prevent very high scarcity prices, here set to 4000 €/MWh to reflect the technical limit on EU electricity markets
+  emission_prices:
+    enable: true
+    co2: 100
+    # co2_monthly_price: true # Add monthly cost for a carbon-dioxide price based on historical values built by the rule build_monthly_prices
+
+
+clustering: 
+  mode: busmap # administrative # Uses NUTS3 regions for clustering (Kreisebene) 
+  administrative:
+    level: 1
+  focus_weights: false
+  # copperplate_regions: [DE]
+  temporal:
+    resolution_elec: false # Can re-sample the resultion to 'nH' by averaging over n hours
+
+# solving:
+  # options:
+    # noisy_costs: true
+
+solving:
+  options:
+    custom_extra_functionality: "../data/resource_class_capacity_constraint.py"
+  solver:
+    name: gurobi
+    options: gurobi-default
+
+plotting:
+  map:
+    boundaries: [5, 16, 47, 56] # Germany
+  balance_timeseries:
+    monthly: false
+
+load:
+    custom_demand_file: "data/electricity_demand_ERAA2023.csv"

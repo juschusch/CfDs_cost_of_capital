@@ -750,7 +750,8 @@ rule add_electricity:
         load=resources("electricity_demand_base_s.nc"),
         busmap=resources("busmap_base_s_{clusters}.csv"),
     output:
-        resources("networks/base_s_{clusters}_elec.nc"),
+        network=resources("networks/base_s_{clusters}_elec.nc"),
+        generated_fuel_price=resources("monthly_fuel_price_generated_{clusters}.csv"),
     log:
         logs("add_electricity_{clusters}.log"),
     benchmark:

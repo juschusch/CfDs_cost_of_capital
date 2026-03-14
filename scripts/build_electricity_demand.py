@@ -248,39 +248,71 @@ if __name__ == "__main__":
         else slice(snapshots[0], snapshots[-1])
     )
 
-    interpolate_limit = snakemake.params.load["fill_gaps"]["interpolate_limit"]
-    countries = snakemake.params.countries
+    custom_demand_path = snakemake.params.load.get("custom_demand_file")
+    
+    if custom_demand_path:
+        logger.info(f"Using custom electricity demand file from {custom_demand_path}.")
+        # Read custom file
+        # Assuming the file has datetime index in first column and country codes as columns
+        load = pd.read_csv(custom_demand_path, index_col=0, parse_dates=True)
+         
+        # Ensure timezone naive
+        if load.index.tz is not None:
+            load = load.tz_localize(None)
+        
+        countries = snakemake.params.countries
+        # Filter for requested countries that are present in the file
+        # (Intersection of requested countries and available columns)
+        valid_countries = list(set(countries).intersection(load.columns))
+        missing_countries = list(set(countries) - set(load.columns))
+        
+        if missing_countries:
+            logger.warning(f"Custom demand file is missing data for: {missing_countries}")
+            
+        load = load[valid_countries]
+        
+        # Reindex to the desired snapshots
+        # This will introduce NaNs if timestamps are missing, which the final assert will catch
+        load = load.reindex(index=snapshots)
+        
+        # For custom files, we typically assume they are pre-processed. 
+        # However, we allow the synthetic supplement if specifically requested/configured,
+        # otherwise we assume the file is complete.
+        
+    else:
+        interpolate_limit = snakemake.params.load["fill_gaps"]["interpolate_limit"]
+        countries = snakemake.params.countries
 
-    time_shift = snakemake.params.load["fill_gaps"]["time_shift_for_large_gaps"]
+        time_shift = snakemake.params.load["fill_gaps"]["time_shift_for_large_gaps"]
 
-    load = load_timeseries(snakemake.input.reported, years, countries)
+        load = load_timeseries(snakemake.input.reported, years, countries)
 
-    load = load.reindex(index=snapshots)
+        load = load.reindex(index=snapshots)
 
-    if "UA" in countries:
-        # attach load of UA (best data only for entsoe transparency)
-        load_ua = load_timeseries(snakemake.input.reported, "2018", ["UA"])
-        snapshot_year = str(snapshots.year.unique().item())
-        time_diff = pd.Timestamp("2018") - pd.Timestamp(snapshot_year)
-        # hack indices (currently, UA is manually set to 2018)
-        load_ua.index -= time_diff
-        load["UA"] = load_ua
-        # attach load of MD (no time-series available, use 2020-totals and distribute according to UA):
-        # https://www.iea.org/data-and-statistics/data-browser/?country=MOLDOVA&fuel=Energy%20consumption&indicator=TotElecCons
-        if "MD" in countries:
-            load["MD"] = 6.2e6 * (load_ua / load_ua.sum())
+        if "UA" in countries:
+            # attach load of UA (best data only for entsoe transparency)
+            load_ua = load_timeseries(snakemake.input.reported, "2018", ["UA"])
+            snapshot_year = str(snapshots.year.unique().item())
+            time_diff = pd.Timestamp("2018") - pd.Timestamp(snapshot_year)
+            # hack indices (currently, UA is manually set to 2018)
+            load_ua.index -= time_diff
+            load["UA"] = load_ua
+            # attach load of MD (no time-series available, use 2020-totals and distribute according to UA):
+            # https://www.iea.org/data-and-statistics/data-browser/?country=MOLDOVA&fuel=Energy%20consumption&indicator=TotElecCons
+            if "MD" in countries:
+                load["MD"] = 6.2e6 * (load_ua / load_ua.sum())
 
-    if snakemake.params.load["manual_adjustments"]:
-        load = manual_adjustment(load, snakemake.input[0], countries)
+        if snakemake.params.load["manual_adjustments"]:
+            load = manual_adjustment(load, snakemake.input[0], countries)
 
-    if snakemake.params.load["fill_gaps"]["enable"]:
-        logger.info(f"Linearly interpolate gaps of size {interpolate_limit} and less.")
-        load = load.interpolate(method="linear", limit=interpolate_limit)
+        if snakemake.params.load["fill_gaps"]["enable"]:
+            logger.info(f"Linearly interpolate gaps of size {interpolate_limit} and less.")
+            load = load.interpolate(method="linear", limit=interpolate_limit)
 
-        logger.info(
-            f"Filling larger gaps by copying time-slices of period '{time_shift}'."
-        )
-        load = load.apply(fill_large_gaps, shift=time_shift)
+            logger.info(
+                f"Filling larger gaps by copying time-slices of period '{time_shift}'."
+            )
+            load = load.apply(fill_large_gaps, shift=time_shift)
 
     if snakemake.params.load["supplement_synthetic"]:
         logger.info("Supplement missing data with synthetic data.")

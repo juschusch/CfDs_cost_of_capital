@@ -122,7 +122,12 @@ def calculate_annuity(n: float, r: float | pd.Series) -> float | pd.Series:
     >>> calculate_annuity(20, 0.05)
     0.08024258718774728
     """
-    if isinstance(r, pd.Series):
+    if isinstance(r, (pd.Series, pd.Index)):
+        # If r is an Index, we can treat it similar to a Series for calculation
+        # assuming we don't need index alignment against n if n is scalar
+        if isinstance(r, pd.Index):
+            r = r.to_series(index=r)
+        
         return pd.Series(1 / n, index=r.index).where(
             r == 0, r / (1.0 - 1.0 / (1.0 + r) ** n)
         )
@@ -258,7 +263,15 @@ def load_costs(
     for attr in ("investment", "lifetime", "FOM", "VOM", "efficiency", "fuel", "discount rate"):
         overwrites = config["overwrites"].get(attr)
         if overwrites is not None:
+            # Filter out dictionary entries (resource-class specific overwrites)
+            overwrites = {k: v for k, v in overwrites.items() if not isinstance(v, dict)}
             overwrites = pd.Series(overwrites)
+            
+            # Allow overwrites to add new carriers even if not in original costs
+            new_index = overwrites.index.difference(costs.index)
+            if not new_index.empty:
+                costs = pd.concat([costs, pd.DataFrame(index=new_index)], axis=0)
+
             costs.loc[overwrites.index, attr] = overwrites
             logger.info(f"Overwriting {attr} with:\n{overwrites}")
 
@@ -311,9 +324,21 @@ def load_costs(
         overwrites = config["overwrites"].get(attr)
         if overwrites is not None:
             overwrites = pd.Series(overwrites)
-            idx = overwrites.index.intersection(costs.index)
-            costs.loc[idx, attr] = overwrites.loc[idx]
+            # Allow overwrites to add new carriers (e.g. load) even if not in original costs
+            new_index = overwrites.index.difference(costs.index)
+            if not new_index.empty:
+                costs = pd.concat([costs, pd.DataFrame(index=new_index)], axis=0)
+            
+            costs.loc[overwrites.index, attr] = overwrites
             logger.info(f"Overwriting {attr} with:\n{overwrites}")
+
+    if "load" in costs.index:
+        if pd.isna(costs.at["load", "efficiency"]):
+            costs.at["load", "efficiency"] = 1.0
+        if pd.isna(costs.at["load", "VOM"]):
+            costs.at["load", "VOM"] = costs.at["load", "marginal_cost"]
+        if pd.isna(costs.at["load", "fuel"]):
+            costs.at["load", "fuel"] = 0.0
 
     return costs
 
@@ -506,6 +531,21 @@ def set_transmission_costs(
     n.links.loc[dc_b, "capital_cost"] = costs
 
 
+# def attach_everywhere_powerplants(n, costs, carriers, extendable_carriers):
+#     add_missing_carriers(n, carriers)
+#     for car in carriers:
+#         n.add(
+#             "Generator",
+#             n.buses.index + " " + car,
+#             bus=n.buses.index,
+#             carrier=car,
+#             p_nom_extendable=car in extendable_carriers,
+#             capital_cost=costs.at[car, "capital_cost"],
+#             marginal_cost=costs.at[car, "marginal_cost"],
+#             efficiency=costs.at[car, "efficiency"],
+#         )
+
+
 def attach_wind_and_solar(
     n: pypsa.Network,
     costs: pd.DataFrame,
@@ -514,6 +554,8 @@ def attach_wind_and_solar(
     extendable_carriers: list | set,
     line_length_factor: float = 1.0,
     landfall_lengths: dict = None,
+    overwrites: dict = None,
+    nyears: float = 1.0,
 ) -> None:
     """
     Attach wind and solar generators to the network.
@@ -534,11 +576,18 @@ def attach_wind_and_solar(
         Factor to scale the line length, by default 1.0.
     landfall_lengths : dict, optional
         Dictionary containing the landfall lengths for offshore wind, by default None.
+    overwrites : dict, optional
+        Dictionary containing the resource class specific overwrites, by default None.
+    nyears : float, optional
+        Number of years for investment, by default 1.0.
     """
     add_missing_carriers(n, carriers)
 
     if landfall_lengths is None:
         landfall_lengths = {}
+
+    if overwrites is None:
+        overwrites = {}
 
     for car in carriers:
         if car == "hydro":
@@ -557,9 +606,52 @@ def attach_wind_and_solar(
             ds = ds.stack(bus_bin=["bus", "bin"])
 
             supcar = car.split("-", 2)[0]
+            midcar = car.split("-", 2)[1] if len(car.split("-")) > 1 else ""
+
+            # Determine base technology for costs
             if supcar == "offwind":
-                distance = ds["average_distance"].to_pandas()
-                distance.index = distance.index.map(flatten)
+                if midcar == "float":
+                    tech_key = car
+                else:
+                    tech_key = "offwind"
+            elif car == "solar":
+                tech_key = "solar-utility"
+            else:
+                tech_key = car
+
+            # Helper to get parameter values (either scalar or per bin)
+            bus_bins = ds.indexes["bus_bin"]
+            flat_bus_bins = bus_bins.map(flatten)
+
+            def get_val(attr):
+                # Check for resource class specific overwrite for this carrier
+                ov_dict = overwrites.get(attr, {}).get(car)
+                val = costs.at[tech_key, attr]
+                if isinstance(ov_dict, dict):
+                     # Map flattened (bus, bin) keys to values associated with keys in ov_dict
+                     # If key not in ov_dict, use default val
+                     return flat_bus_bins.map(lambda k: ov_dict.get(k, val))
+                return val
+
+            # Recalculate component costs -> somewhere here lies the mistake
+            comp = {}
+            for attr in ["investment", "lifetime", "FOM", "discount rate"]:
+                comp[attr] = get_val(attr)
+                logger.info(f"Using {attr} for {car}: {comp[attr]}")
+            
+            annuity = calculate_annuity(comp["lifetime"], comp["discount rate"])
+            turbine_cost = (annuity + comp["FOM"] / 100.0) * comp["investment"] * nyears
+
+            if supcar == "offwind":
+                # Ensure distance is broadcast to (bus, bin) before pandas conversion
+                dist = ds["average_distance"]
+                if "bin" not in dist.dims and "bus" in dist.dims:
+                     dist = dist.broadcast_like(ds["profile"])
+                
+                distance = dist.to_pandas()
+                # Do NOT flatten the index immediately here if we want to add it to turbine_cost (which is MultiIndex)
+                # distance.index = distance.index.map(flatten) 
+                
                 submarine_cost = costs.at[car + "-connection-submarine", "capital_cost"]
                 underground_cost = costs.at[
                     car + "-connection-underground", "capital_cost"
@@ -568,28 +660,62 @@ def attach_wind_and_solar(
                     distance * submarine_cost + landfall_length * underground_cost
                 )
 
-                # Take 'offwind-float' capital cost for 'float', and 'offwind' capital cost for the rest ('ac' and 'dc')
-                midcar = car.split("-", 2)[1]
-                if midcar == "float":
-                    capital_cost = (
-                        costs.at[car, "capital_cost"]
-                        + costs.at[car + "-station", "capital_cost"]
-                        + connection_cost
-                    )
+                # Add station cost (assumed constant per technology)
+                station_cost = costs.at[car + "-station", "capital_cost"]
+                
+                # Perform addition on values only to avoid index alignment issues (duplicate MultiIndex)
+                if isinstance(connection_cost, (pd.Series, pd.DataFrame)):
+                    # Explicitly convert to numpy array to prevent pandas form trying to align/reindex
+                    # turbine_cost is an Index, so we get its values too
+                    cap_starts = turbine_cost.values if isinstance(turbine_cost, pd.Index) else turbine_cost
+                    if isinstance(cap_starts, pd.Series): cap_starts = cap_starts.values
+                    
+                    cc_vals = connection_cost.values
+                    # station_cost is scalar
+                    
+                    total_values = cap_starts + station_cost + cc_vals
+                    
+                    # Create Series directly from values
+                    capital_cost = pd.Series(total_values, index=connection_cost.index)
                 else:
-                    capital_cost = (
-                        costs.at["offwind", "capital_cost"]
-                        + costs.at[car + "-station", "capital_cost"]
-                        + connection_cost
-                    )
+                    capital_cost = turbine_cost + station_cost + connection_cost
+
                 logger.info(
                     f"Added connection cost of {connection_cost.min():0.0f}-{connection_cost.max():0.0f} Eur/MW/a to {car}"
                 )
             else:
-                capital_cost = costs.at[car, "capital_cost"]
+                capital_cost = turbine_cost
 
             buses = ds.indexes["bus_bin"].get_level_values("bus")
             bus_bins = ds.indexes["bus_bin"].map(flatten)
+
+            # if isinstance(capital_cost, (pd.Series, pd.Index)):
+            #     # Ensure the index matches bus_bins for alignment
+            #     if len(capital_cost) == len(bus_bins):
+            #         capital_cost.index = bus_bins
+            #     else:
+            #         capital_cost.index = capital_cost.index.map(flatten)
+            #         capital_cost = capital_cost.reindex(bus_bins)
+            
+            # The calculation above (turbine_cost + ...) keeps the Index from the bins/distance Series.
+            # Convert it to a Series that explicitly aligns with bus_bins.
+            if isinstance(capital_cost, (pd.Series, pd.Index)):
+                if isinstance(capital_cost, pd.Index):
+                    capital_cost = capital_cost.to_series(index=capital_cost)
+                
+                # Make sure the index is string-formatted to match the bus_bins style
+                # bus_bins is ["Bus 1", "Bus 2", ...] (strings)
+                # capital_cost.index might be MultiIndex [("Bus", 1), ...] or flattened strings already
+                
+                # If it's a MultiIndex, flatten it
+                if isinstance(capital_cost.index, pd.MultiIndex):
+                    capital_cost.index = capital_cost.index.map(flatten)
+                
+                # If lengths match, just assign. If not, reindex.
+                if len(capital_cost) == len(bus_bins):
+                     capital_cost.index = bus_bins
+                else:
+                     capital_cost = capital_cost.reindex(bus_bins)
 
             p_nom_max = ds["p_nom_max"].to_pandas()
             p_nom_max.index = p_nom_max.index.map(flatten)
@@ -1211,13 +1337,63 @@ if __name__ == "__main__":
     else:
         unit_commitment = None
 
-    if params.conventional["dynamic_fuel_price"]:
+    if params.conventional["dynamic_fuel_price"] == "historical":
         fuel_price = pd.read_csv(
             snakemake.input.fuel_price, index_col=0, header=0, parse_dates=True
         )
         fuel_price = fuel_price.reindex(n.snapshots).ffill()
+    elif params.conventional["dynamic_fuel_price"] == "random_walk":
+        fuel_price = pd.DataFrame(index=n.snapshots)
+        # Run a random walk to generate fuel prices for each month in the simulation
+        np.random.seed(params.conventional.get("rw_random_seed", 0))
+        months = pd.date_range(n.snapshots.min(), n.snapshots.max(), freq="MS")
+        for carrier in params.conventional["rw_fuel_types"]:
+            base_price = costs.at[carrier, "fuel"]
+            steps = np.random.normal(
+                loc=0,
+                scale=params.conventional.get("rw_random_walk_stddev", 0.05) * base_price,
+                size=len(months),
+            )
+            fuel_price_series = base_price + pd.Series(np.cumsum(steps), index=months).reindex(n.snapshots).ffill()
+            fuel_price[carrier] = fuel_price_series
+    elif params.conventional["dynamic_fuel_price"] == "scenarios":
+        fuel_price = pd.DataFrame(index=n.snapshots)
+        dist = params.conventional["scn_distribution"]
+
+        multipliers = []
+        n_snapshots = len(n.snapshots)
+
+        # Handle both dict (legacy) and list (ordered with duplicates)
+        if isinstance(dist, dict):
+            iterator = dist.items()
+        else:
+            iterator = dist
+
+        for share, multiplier in iterator:
+            count = int(share * n_snapshots)
+            multipliers.extend([multiplier] * count)
+
+        # Fill any remaining snapshots due to rounding with the last multiplier
+        remaining = n_snapshots - len(multipliers)
+        if remaining > 0:
+            multipliers.extend([multipliers[-1]] * remaining)
+
+        # If we exceeded (e.g. shares sum > 1), truncate
+        multipliers = multipliers[:n_snapshots]
+
+        fuel_price_series = pd.Series(multipliers, index=n.snapshots)
+
+        for carrier in params.conventional["dfp_fuel_types"]:
+            base_price = costs.at[carrier, "fuel"]
+            fuel_price[carrier] = base_price * fuel_price_series
     else:
         fuel_price = None
+
+    if hasattr(snakemake.output, "generated_fuel_price"):
+        if fuel_price is not None:
+            fuel_price.to_csv(snakemake.output.generated_fuel_price)
+        else:
+            pd.DataFrame().to_csv(snakemake.output.generated_fuel_price)
 
     attach_conventional_generators(
         n,
@@ -1239,6 +1415,8 @@ if __name__ == "__main__":
         extendable_carriers,
         params.line_length_factor,
         landfall_lengths,
+        params.costs.get("overwrites"),
+        Nyears,
     )
 
     if "hydro" in renewable_carriers:

@@ -1,0 +1,115 @@
+# This config is used to create the cutout for the main runs.
+# Run the command `snakemake "cutouts/de-1982-2016-era5.nc" --configfile config/create_cutout.yaml` to build the cutout.
+
+logging:
+  level: INFO
+solve_network: solve
+
+run: 
+  name: "Create_Cutout"
+  scenarios:
+    enable: false
+  shared_cutouts: true 
+
+scenario:
+  clusters:
+  - 1
+  technology: [onwind, offwind-ac, offwind-dc, solar]
+  opts:
+  - EP 
+
+countries:
+- DE
+
+snapshots:
+  start: "1982-01-01"
+  end: "2017-01-01" 
+  inclusive: 'left'
+
+enable:
+  retrieve: true
+  build_cutout: true
+  retrieve_cutout: false
+
+electricity:
+  extendable_carriers:
+    Generator: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, OCGT, CCGT, coal, lignite, load] #, geothermal, biomass]
+    StorageUnit: [battery, H2]
+    Store: [] # No charging/discharging limtis
+    Link: [H2 pipeline]
+  # custom_powerplants: data/custom_powerplants.csv # Used to add custom existing generators in brownfield models
+  everywhere_powerplants: [load] #nuclear, oil, OCGT, CCGT, coal, lignite] # Adds generators with zero capacity at every node, important to make them extendable
+  conventional_carriers: [geothermal, biomass] # Adds existing conventional power plants from as lower bound powerplants.csv
+  renewable_carriers: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, hydro] # Includes listed renewable generator types in optimization
+
+  estimate_renewable_capacities:
+    enable: false
+
+atlite:
+  cutout_directory: cutouts
+  # default_cutout: de-1982_2016-era5
+  nprocesses: 16
+  show_progress: true
+  cutouts:
+    de-1982-2016-era5:
+      module: [era5] 
+      x: [5., 16.] # Restrict to Germany
+      y: [47., 56.]
+      dx: 0.3
+      dy: 0.3
+      time: ["1982-01-01", "2017-01-01"]
+      prepare_kwargs:
+        monthly_requests: false
+        tmpdir: "cutouts/atlite_tmp"
+
+renewable:
+  onwind:
+    resource_classes: 10
+  offwind-ac:
+    resource_classes: 4
+    capacity_per_sqkm: 6.5 # Default assumption of 2 is unrealistically low
+  offwind-dc:
+    resource_classes: 4
+    capacity_per_sqkm: 6.5 # Taken from https://maritime-spatial-planning.ec.europa.eu/practices/capacity-densities-european-offshore-wind-farms for DE
+  offwind-float:
+    resource_classes: 4 
+    capacity_per_sqkm: 6.5
+  solar:
+    resource_classes: 10
+  solar-hsat:
+    resource_classes: 10 
+  
+costs:
+  year: 2030
+  capital_cost:
+    load: 0.0 # To prevent load shedding costs
+  marginal_cost:
+    load: 4000.0 # Value of Lost Load (VoLL) to prevent very high scarcity prices, here set to 4000 €/MWh to reflect the technical limit on EU electricity markets
+  emission_prices:
+    enable: true
+    co2: 100
+
+clustering: 
+  mode: busmap # administrative # Uses NUTS3 regions for clustering (Kreisebene) 
+  administrative:
+    level: 1
+  focus_weights: false
+  # copperplate_regions: [DE]
+  temporal:
+    resolution_elec: false # Can re-sample the resultion to 'nH' by averaging over n hours
+
+solving:
+  options:
+    custom_extra_functionality: "../data/resource_class_capacity_constraint.py"
+  solver:
+    name: gurobi
+    options: gurobi-default
+
+plotting:
+  map:
+    boundaries: [5, 16, 47, 56] # Germany
+  balance_timeseries:
+    monthly: false
+
+load:
+    custom_demand_file: "data/electricity_demand_ERAA2023.csv"
