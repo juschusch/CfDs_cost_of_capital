@@ -172,63 +172,6 @@ def get_hourly_generation_per_MW(carrier, n, rc=0):
     return hourly_generation_per_MW
 
 
-
-# ___ Get CO2 emission data (still needs some fixing!) ___
-
-# Function to get CO2 intensity of all carriers
-def CO2_intensity_carriers(run_name):
-    n_temp = pypsa.Network(f"resources/{run_name}/networks/base_s_1_elec_EP.nc")
-    co2_intensity = n_temp.carriers.co2_emissions
-    return co2_intensity
-
-
-# Function to calculate annual CO2 emissions
-def annual_CO2_emissions(run_name, year):
-    co2_intensity = CO2_intensity_carriers(run_name)
-    n = get_network(run_name)
-    total_emissions = 0
-    for carrier in co2_intensity.index:
-        if carrier in n.generators.carrier.unique():
-            hourly_generation = get_hourly_generation(carrier, n)
-            annual_generation = hourly_generation[hourly_generation.index.year == year]
-            emissions = (annual_generation.values.flatten() * co2_intensity[carrier]).sum() / 1e6  # Convert to MtCO2
-            total_emissions += emissions
-        else:
-            print(f"Carrier {carrier} not found in the network generators.")
-    return total_emissions
-
-
-# Function to calculate total CO2 emissions
-def total_CO2_emissions(run_name_or_n):
-    """Calculate total CO2 emissions.
-
-    Accepts either a run name (str) or a pypsa.Network object. If a network
-    is provided the calculation runs directly on it; if a run name is given
-    the function will load the network from the expected results directory.
-    Returns total emissions (in MtCO2 as in the original code division by 1e6).
-    """
-    if isinstance(run_name_or_n, str):
-        run_name = run_name_or_n
-        co2_intensity = CO2_intensity_carriers(run_name)
-        n = get_network(run_name)
-    else:
-        n = run_name_or_n
-        if hasattr(n, "carriers") and "co2_emissions" in n.carriers.columns:
-            co2_intensity = n.carriers.co2_emissions
-        else:
-            # No intensity data available
-            return 0.0
-
-    total_emissions = 0.0
-    for carrier in co2_intensity.index:
-        if carrier in n.generators.carrier.unique():
-            hourly_generation = get_hourly_generation(carrier, n)
-            emissions = (hourly_generation.values.flatten() * co2_intensity[carrier]).sum() / 1e6  # Convert to MtCO2
-            total_emissions += emissions
-    return total_emissions
-
-
-
 # ___ Price statistics ___
 
 # Get hourly marginal price at each node for any carrier
@@ -269,6 +212,29 @@ def cap_prices_above_threshold(n, bus="DE0 0", threshold=5000):
     price_t = get_hourly_marginal_price(n, bus)
     price_t[price_t > threshold] = threshold
     return price_t
+
+
+# Average price of each MWh
+def average_price_per_MWh(n, bus="DE0 0"):
+    price_t = get_hourly_marginal_price(n, bus)
+    total_hg = n.generators_t.p.sum().sum()
+    total_costs = n.generators_t.p.mul(price_t, axis=0).sum().sum()
+    avg_price_per_MWh = total_costs / total_hg if total_hg != 0 else np.nan
+    return avg_price_per_MWh
+
+
+# System costs
+def system_costs(n, bus="DE0 0"):
+    # As optimized by PyPSA, the objective function value is the total investment and fixed O&M costs.
+    # total_costs = n.objective
+    # As used here, total costs for offtakers
+    gens_at_bus = n.generators.index[n.generators.bus == bus]
+    if len(gens_at_bus) == 0:
+        raise KeyError(f"No generators found at bus '{bus}'.")
+    total_hg = n.generators_t.p.loc[:, gens_at_bus].sum(axis=1)
+    price = get_hourly_marginal_price(n, bus)
+    total_costs = (total_hg * price).sum()
+    return total_costs
 
 
 
@@ -369,41 +335,6 @@ def statistics(n, bus="DE0 0"):
 
 
 # ___ Plots of general statistics ___
-
-# Plot comparison of key statistics for different scenarios
-# This has to be adapted with the final run names
-def compare_statistics_plot(stat, save_to_file=True):
-    run_name_nocfd = "2030_without_CfD_v5"
-    results_directory_nocfd = "../results/{}".format(run_name_nocfd)
-    n_nocfd = pypsa.Network(f"{results_directory_nocfd}/networks/base_s_1_EP__2030.nc")
-    stats_nocfd = statistics(n=n_nocfd)
-    stat_nocfd = stats_nocfd[stat]
-    run_name_cfd = "2030_with_CfD_v4"
-    results_directory_cfd = "../results/{}".format(run_name_cfd)
-    n_cfd = pypsa.Network(f"{results_directory_cfd}/networks/base_s_1_EP__2030.nc")
-    stats_cfd = statistics(n=n_cfd)
-    stat_cfd = stats_cfd[stat]
-    run_name_cap = "2030_withouth_CfD_v6"
-    results_directory_cap = "../results/{}".format(run_name_cap)
-    n_cap = pypsa.Network(f"{results_directory_cap}/networks/base_s_1_EP__2030.nc")
-    stats_cap = statistics(n=n_cap)
-    stat_cap = stats_cap[stat]
-    plt.figure(figsize=(8, 5))
-    plt.bar(['No CfD', 'With CfD', 'With CM'], [stat_nocfd, stat_cfd, stat_cap], color=[cm_1, cm_2, cm_3])
-    plt.ylabel(stat)
-    plt.title(f'Comparison of {stat} across Scenarios')
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    if save_to_file:
-        output_dir = "../results/my_plots"
-        os.makedirs(output_dir, exist_ok=True)
-        filename = f'{output_dir}/comparison_{stat}.png'
-        plt.savefig(filename, bbox_inches='tight')
-        plt.close()
-        print(f'Plot saved to {filename}')
-    else:
-        plt.show()
-
 
 # Plot installed capacities of all carriers
 def plot_installed_capacities(run_name, save_to_file=True):
@@ -532,56 +463,6 @@ def plot_avg_annual_generation(run_name, save_to_file=True):
         plt.show() 
 
 
-# Plot installed capacities of a carrier across different model iterations
-# This has to be adapted with the final run names
-def plot_installed_capacities_across_scenarios(carrier, save_to_file=True): 
-    run_name_nocfd = "2030_without_CfD_v5"
-    results_directory_nocfd = "../results/{}".format(run_name_nocfd)
-    n_nocfd = pypsa.Network(f"{results_directory_nocfd}/networks/base_s_1_EP__2030.nc")
-    c_inst_nocfd = n_nocfd.generators.p_nom_opt[n_nocfd.generators.carrier == carrier].sum()
-    run_name_cfd = "2030_with_CfD_v4"
-    results_directory_cfd = "../results/{}".format(run_name_cfd)
-    n_cfd = pypsa.Network(f"{results_directory_cfd}/networks/base_s_1_EP__2030.nc")
-    c_inst_cfd = n_cfd.generators.p_nom_opt[n_cfd.generators.carrier == carrier].sum()
-    run_name_cap = "2030_withouth_CfD_v6"
-    results_directory_cap = "../results/{}".format(run_name_cap)
-    n_cap = pypsa.Network(f"{results_directory_cap}/networks/base_s_1_EP__2030.nc")
-    c_inst_cap = n_cap.generators.p_nom_opt[n_cap.generators.carrier == carrier].sum()
-    plt.figure(figsize=(8, 5))
-    categories = ['Without CfD', 'With CfD', 'With Capacity Component']
-    capacities = [c_inst_nocfd, c_inst_cfd, c_inst_cap]
-    color = ''
-    if carrier == 'offwind':
-        color = mcblue
-    elif carrier == 'onwind':
-        color = mcgreen
-    elif carrier == 'solar':
-        color = mcorange
-    elif carrier == 'solar rooftop':
-        color = mcred
-    plt.bar(categories, capacities, color=color)
-    carrier_name = ""
-    if carrier == 'offwind':
-        carrier_name = "Offshore Wind"
-    elif carrier == 'onwind':
-        carrier_name = "Onshore Wind"
-    elif carrier == 'solar':
-        carrier_name = "Ground-Mounted Solar PV"
-    elif carrier == 'solar rooftop':
-        carrier_name = "Rooftop Solar PV"
-    plt.title(f'Installed Capacities for {carrier_name} [MW]')
-    plt.ylabel('Installed Capacity [MW]')
-    plt.grid(True)
-    if save_to_file:
-        output_dir = '../results/my_plots'
-        os.makedirs(output_dir, exist_ok=True)
-        filename = f'{output_dir}/installed_capacities_{carrier}.png'
-        plt.savefig(filename, bbox_inches='tight')
-        plt.close()
-        print(f'Plot saved to {filename}')
-    else:
-        plt.show()
-
 
 # ___ Resource classes ___
 
@@ -614,7 +495,7 @@ def plot_resource_classes_map(run_name, carrier, save_to_file=True):
     
 
 
-# ___ Revenue statistics ___
+# ___ Annual revenue statistics based on optimization run ___
 
 # Load cost data
 def get_costs(run_name):
@@ -655,6 +536,48 @@ def annual_revenue_per_MW(costs, carrier, year, n, rc, bus="DE0 0"):
     )
     rev_per_MW_year = ann_rev / p_nom_opt if p_nom_opt != 0 else np.nan
     return rev_per_MW_year
+
+
+# Revenue of a carrier and rc for a given year with a price cap during high gas price years
+def annual_revenue_with_price_cap(costs, carrier, year, n, rc, bus="DE0 0", cap=130):
+    hg = get_hourly_generation(carrier, n, rc)
+    hg_year = hg[hg.index.year == year]
+    price = get_hourly_marginal_price(n, bus)
+    years = n.generators_t.p.index.year.unique()
+    price_year = price[price.index.year == year]
+    if year in range((max(years) - min(years)) * 4 // 5 + min(years) + 1, max(years) + 1):
+        price_year[price_year > cap] = cap
+
+    # Defaults and helper
+    if carrier == 'onwind':
+        vom = costs.at[carrier, "VOM"]  # in €/MWh
+    else: 
+        vom = 0.0
+
+    rev_year_capped = (hg_year.values.flatten() * (price_year.values.flatten() - vom)).sum()
+    return rev_year_capped
+
+
+# Annual revenue per MW of a carrier and rc for a given year with a price cap during high gas price years
+def annual_revenue_per_MW_with_price_cap(costs, carrier, year, n, rc, bus="DE0 0", cap=130):
+    ann_rev_capped = annual_revenue_with_price_cap(costs, carrier, year, n, rc, bus, cap)
+    p_nom_opt = n.generators.p_nom_opt[f"DE0 0 {rc} {carrier}"] if carrier != 'offwind' else sum(
+        n.generators.p_nom_opt[f"DE0 0 {l} {c}"] 
+        for c in ["offwind-ac", "offwind-dc", "offwind-float"] 
+        for l in range(n.generators.index[n.generators.carrier == c].size)
+    )
+    rev_per_MW_year_capped = ann_rev_capped / p_nom_opt if p_nom_opt != 0 else np.nan
+    return rev_per_MW_year_capped
+
+
+# Lost revenue due to price cap 
+def lost_rev_pct_pc(run_name, carrier, n, rc, cap=130, bus="DE0 0"):
+    costs = get_costs(run_name)
+    years = n.generators_t.p.index.year.unique()
+    rev_per_mw = sum([annual_revenue_per_MW(costs, carrier, year, n, rc, bus=bus) for year in years])
+    rev_per_mw_capped = sum([annual_revenue_per_MW_with_price_cap(costs, carrier, year, n, rc, bus=bus, cap=cap) for year in years])
+    lost_revenue_pct = ((rev_per_mw - rev_per_mw_capped) / rev_per_mw * 100 if rev_per_mw != 0 else np.nan)
+    return lost_revenue_pct
 
 
 # Strike price of a carrier and rc in € per MWh for the production-based CfD
@@ -783,6 +706,9 @@ def annual_revenue_statistics(costs, carrier, n, rc, bus="DE0 0"):
     return stats
 
 
+
+# ___ Monte Carlo Simulation based Revenue Statistics ___
+
 # Monte Carlo Simulation of price years based on a Markov Chain model
 def years_mcs(run_name, n, T=30, N=10000):
     # Distribution of years into Low, Mid, High buckets
@@ -865,7 +791,7 @@ def years_mcs(run_name, n, T=30, N=10000):
 
 
 # Monte Carlo Simulation of revenue years based on a Markov Chain model
-def revenue_mcs(costs, run_name, n, T=30, N=10000):
+def revenue_mcs(costs, run_name, n, T=30, N=10000, cap=130, scenarios=['mb', 'pc', 'pb', 'pi', 'cb']):
     vre_carriers = ['offwind-ac', 'offwind-dc', 'offwind-float', 'onwind', 'solar', 'solar-hsat'] #'offwind', 
     # Read the CSV file produced by years_mcs
     file_path = f"../results/{run_name}/MCS/years_mcs_T={T}_N={N}.csv"
@@ -894,67 +820,53 @@ def revenue_mcs(costs, run_name, n, T=30, N=10000):
     # Pre-compute strike prices once per (carrier, rc) — these are year-independent
     strike_prices = {}
     for carrier, rc in stream_info:
-        strike_prices[(carrier, rc)] = {
-            'pb': strike_price_PB(costs, carrier, n, rc),
-            'pi': strike_price_PI(costs, carrier, n, rc),
-            'cb': strike_price_CB(costs, carrier, n, rc),
-        }
+        sp = {}
+        if 'pb' in scenarios:
+            sp['pb'] = strike_price_PB(costs, carrier, n, rc)
+        if 'pi' in scenarios:
+            sp['pi'] = strike_price_PI(costs, carrier, n, rc)
+        if 'cb' in scenarios:
+            sp['cb'] = strike_price_CB(costs, carrier, n, rc)
+        strike_prices[(carrier, rc)] = sp
         
     # 3. Create a lookup table: year -> array of revenues for all streams
     revenue_lookup = {}
     for year in unique_years:
-        revenues_mb = []
-        revenues_pb = []
-        revenues_pi = []
-        revenues_cb = []
+        revenues_by_scenario = {s: [] for s in scenarios}
         for carrier, rc in stream_info:
             sp = strike_prices[(carrier, rc)]
-            rev_mb = annual_revenue_per_MW(costs, carrier, year, n, rc)
-            rev_pb = annual_revenue_PB_per_MW(costs, carrier, year, n, rc, strike_price=sp['pb'])
-            rev_pi = annual_revenue_PI_per_MW(costs, carrier, year, n, rc, strike_price=sp['pi'])
-            rev_cb = annual_revenue_CB_per_MW(costs, carrier, year, n, rc, strike_price=sp['cb'])
-            revenues_mb.append(rev_mb)
-            revenues_pb.append(rev_pb)
-            revenues_pi.append(rev_pi)
-            revenues_cb.append(rev_cb)
-        revenue_lookup[year] = {
-            'mb': np.array(revenues_mb),
-            'pb': np.array(revenues_pb),
-            'pi': np.array(revenues_pi),
-            'cb': np.array(revenues_cb),
-        }
+            if 'mb' in scenarios:
+                revenues_by_scenario['mb'].append(annual_revenue_per_MW(costs, carrier, year, n, rc))
+            if 'pc' in scenarios:
+                revenues_by_scenario['pc'].append(annual_revenue_per_MW_with_price_cap(costs, carrier, year, n, rc, cap=cap))
+            if 'pb' in scenarios:
+                revenues_by_scenario['pb'].append(annual_revenue_PB_per_MW(costs, carrier, year, n, rc, strike_price=sp['pb']))
+            if 'pi' in scenarios:
+                revenues_by_scenario['pi'].append(annual_revenue_PI_per_MW(costs, carrier, year, n, rc, strike_price=sp['pi']))
+            if 'cb' in scenarios:
+                revenues_by_scenario['cb'].append(annual_revenue_CB_per_MW(costs, carrier, year, n, rc, strike_price=sp['cb']))
+        revenue_lookup[year] = {s: np.array(revs) for s, revs in revenues_by_scenario.items()}
 
     # 4. Initialize result arrays — one per revenue scenario
     # Shape: (N simulations, T years, num_streams)
-    rev_mcs_mb = np.zeros((N, T, total_streams), dtype=float)
-    rev_mcs_pb = np.zeros((N, T, total_streams), dtype=float)
-    rev_mcs_pi = np.zeros((N, T, total_streams), dtype=float)
-    rev_mcs_cb = np.zeros((N, T, total_streams), dtype=float)
+    rev_mcs_scenarios = {s: np.zeros((N, T, total_streams), dtype=float) for s in scenarios}
     
     # 5. Broadcast the pre-calculated revenues into the result arrays
     for year in unique_years:
         mask = (yrs_mcs == year)
         if np.any(mask):
-            rev_mcs_mb[mask] = revenue_lookup[year]['mb']
-            rev_mcs_pb[mask] = revenue_lookup[year]['pb']
-            rev_mcs_pi[mask] = revenue_lookup[year]['pi']
-            rev_mcs_cb[mask] = revenue_lookup[year]['cb']
+            for s in scenarios:
+                rev_mcs_scenarios[s][mask] = revenue_lookup[year][s]
             
     # 6. Reshape to (N, T * total_streams) and save each to a separate CSV
     mcs_dir = f"../results/{run_name}/MCS"
     os.makedirs(mcs_dir, exist_ok=True)
 
-    scenarios = {
-        'mb': rev_mcs_mb,
-        'pb': rev_mcs_pb,
-        'pi': rev_mcs_pi,
-        'cb': rev_mcs_cb,
-    }
-    for label, arr in scenarios.items():
+    for label, arr in rev_mcs_scenarios.items():
         df = pd.DataFrame(arr.reshape(N, -1))
         df.to_csv(f"{mcs_dir}/revenue_mcs_{label}_T={T}_N={N}.csv", index=False)
 
-    return scenarios
+    return rev_mcs_scenarios
 
 
 # Lifetime revenue per MW for a given carrier and resource class from MCS results
@@ -1024,7 +936,7 @@ def avg_lifetime_revenues_mcs_per_MW(run_name, n, carrier, rc, T=0, N=10000, sce
     return avg_lifetime_revenue
 
 
-# Lifetime revenue per MW for a given carrier and resource class from MCS results
+# Average lifetime revenue for a given carrier and resource class from MCS results
 def avg_lifetime_revenues_mcs(run_name, n, carrier, rc, T=0, N=10000, scenario='mb'):
     if T == 0:
         if carrier == 'solar' or carrier == 'solar-hsat':
@@ -1078,7 +990,7 @@ def risk_lifetime_revenues_mcs_per_MW(run_name, n, carrier, rc, T=0, N=10000, sc
     return risk_lifetime_revenue
 
 
-# Average lifetime revenue per MW for a given carrier and resource class from MCS results
+# Average lifetime revenue per MW for a given carrier averaged over all resource classes from MCS results
 def avg_lifetime_revenues_mcs_carrier_per_MW(run_name, n, carrier, T=0, N=10000, scenario='mb'):
     if T == 0:
         if carrier == 'solar' or carrier == 'solar-hsat':
@@ -1339,6 +1251,18 @@ def fixed_costs(run_name, n, carrier, rc, costs):
     return invest_fom
 
 
+# Transform annuiity factor to WACC (IRR) by solving the formula: annuity = r / (1 - (1+r)^-T)
+def annuity_to_wacc(annuity, T):
+    # Solve for irr where: (r / (1 - (1+r)^-T)) - target_ap = 0
+    func = lambda r: (r / (1 - (1+r)**-T)) - annuity
+    try:
+        # Initial guess 7%
+        wacc = fsolve(func, 0.07)[0]
+    except:
+        wacc = np.nan
+    return wacc
+
+
 # Transform CAGR (continuous compunded annual growth rates) to discrete annual growth rates (IRR)
 def irr_to_cagr(irr, T):
     if irr == 0:
@@ -1419,8 +1343,38 @@ def wacc_irr_simplified(f_irr, T, sigma):
     return wacc_irr
 
 
+# Effective risk premium due to price cap (difference in WACC with and without price cap)
+def effective_risk_premium_due_to_price_cap(run_name, carrier, n, rc, T=0, cap=130, bus="DE0 0"):
+    if T == 0:
+        if carrier == 'solar' or carrier == 'solar-hsat':
+            T = 40
+        elif carrier == 'offwind' or carrier == 'offwind-ac' or carrier == 'offwind-dc' or carrier == 'onwind':
+            T = 30
+        elif carrier == 'offwind-float':
+            T = 20
+        else:
+            T = 25
+    costs = get_costs(run_name)
+    years = n.generators_t.p.index.year.unique()
+    rev_per_mw = sum([annual_revenue_per_MW(costs, carrier, year, n, rc, bus=bus) for year in years])
+    if carrier == 'offwind-ac' or carrier == 'offwind-dc':
+        carkey = 'offwind'
+    elif carrier == 'solar-hsat':
+        carkey = 'solar-utility single-axis tracking'
+    else:
+        carkey = carrier
+    ann_old = n.generators.capital_cost[f"DE0 0 {rc} {carrier}"] / (costs.at[carkey, "investment"] * T) - costs.at[carkey, "FOM"] / 100
+    wacc_old = annuity_to_wacc(ann_old, T if T > 0 else costs.at[carkey, "lifetime"])
+    rev_per_mw_capped = sum([annual_revenue_per_MW_with_price_cap(costs, carrier, year, n, rc, bus=bus, cap=cap) for year in years])
+    pct_rev_loss = (rev_per_mw - rev_per_mw_capped) / rev_per_mw if rev_per_mw != 0 else np.nan
+    ann_new = n.generators.capital_cost[f"DE0 0 {rc} {carrier}"] / ((1 - pct_rev_loss) * costs.at[carkey, "investment"] * T) - costs.at[carkey, "FOM"] / 100
+    wacc_new = annuity_to_wacc(ann_new, T if T > 0 else costs.at[carkey, "lifetime"])
+    effective_risk_premium = wacc_new - wacc_old
+    return effective_risk_premium
+
+
 # Updated WACC for each scenario
-def wacc_updated(run_name, n, carrier, rc, T=0, N=10000, scenario='mb'):
+def wacc_updated(run_name, n, carrier, rc, T=0, N=10000, scenario='mb', cap=130):
     if T == 0:
         if carrier == 'solar' or carrier == 'solar-hsat':
             T = 40
@@ -1441,125 +1395,10 @@ def wacc_updated(run_name, n, carrier, rc, T=0, N=10000, scenario='mb'):
         f_irr = np.nan
     sigma = risk_lifetime_revenues_mcs_per_MW(run_name, n, carrier, rc, T, N, scenario)
     wacc = wacc_irr_simplified(f_irr, T, sigma)
+    if scenario == "pc":
+        effective_risk_premium = effective_risk_premium_due_to_price_cap(run_name, carrier, n, rc, T, cap=cap)
+        wacc += effective_risk_premium
     return wacc
-
-
-# # Needs fixing as numerical solver sometimes fails -> not relevant anymore
-# # Numerical solver for debt return (CAGR) based on Mathematica script "Cost of Capital numerical clean.nb"
-# def debt_cagr_numerical(s, I, f, T, sigma):
-#     """
-#     Numerically solves for the CAGR-formulation return on debt d.
-    
-#     Parameters:
-#     s (float): Debt share (0 to 1)
-#     I (float): Expected return on investment (CAGR)
-#     f (float): Risk-free rate (CAGR)
-#     T (float): Lifetime in years
-#     sigma (float): Normalized standard deviation of returns
-    
-#     Returns:
-#     float: The return on debt d
-#     """
-    
-#     # Guard against zero volatility (risk-free case)
-#     if sigma <= 1e-9:
-#         return f
-
-#     # Helper functions equivalent to Mathematica script
-#     def F(omega, sigma):
-#         # F[omega, sigma] := 1/2 * (1 + Erf[(Log[omega] + sigma^2/2)/(sigma * Sqrt[2])])
-#         # This is equivalent to standard normal CDF of (ln(omega) + sigma^2/2)/sigma
-#         # Ensure positive omega for log
-#         omega = np.maximum(omega, 1e-10)
-#         arg = (np.log(omega) + (sigma**2)/2) / sigma
-#         return norm.cdf(arg)
-
-#     def Fc(omega, sigma):
-#         # Fc[omega, sigma] := 1/2 * (1 + Erf[(Log[omega] - sigma^2/2)/(sigma * Sqrt[2])])
-#         # This is equivalent to standard normal CDF of (ln(omega) - sigma^2/2)/sigma
-#         omega = np.maximum(omega, 1e-10)
-#         arg = (np.log(omega) - (sigma**2)/2) / sigma
-#         return norm.cdf(arg)
-
-#     def rhs1(s, I, d, T, sigma):
-#         # s * Exp[d * T] * F[s * Exp[-(I - d) * T], sigma]
-#         omega = s * np.exp(-(I - d) * T)
-#         return s * np.exp(d * T) * F(omega, sigma)
-
-#     def rhs2(s, I, d, T, sigma):
-#         # Exp[I * T] * Fc[s * Exp[-(I - d) * T], sigma]
-#         omega = s * np.exp(-(I - d) * T)
-#         return np.exp(I * T) * Fc(omega, sigma)
-
-#     def lhs(s, f, T):
-#         # s * Exp[f * T]
-#         return s * np.exp(f * T)
-
-#     # The equation to solve: -lhs + rhs1 + rhs2 = 0
-#     def equation(d):
-#         return -lhs(s, f, T) + rhs1(s, I, d, T, sigma) + rhs2(s, I, d, T, sigma)
-
-#     # Initial guess: assume d is close to f
-#     d_guess = f 
-    
-#     # Solve
-#     d_solution = fsolve(equation, d_guess)
-    
-#     return d_solution[0]
-
-
-# Still needs fixing from here onwards
-# Annual revenue per MW for a given carrier and year under a standard financial CfD 
-# (using the average market profile as the reference profile - equivalent to a conventional CfD in this case)
-# def annual_revenue_per_MW_with_CfD(carrier, year, n, use_avg_rev_per_MWh=True, strike_price=0, bus="DE0 0"):
-    if carrier == 'offwind':
-        # For 'offwind-ac'
-        hg_ac_per_mw = get_hourly_generation_per_MW('offwind-ac', n)
-        hg_ac_year_per_mw = hg_ac_per_mw[hg_ac_per_mw.index.year == year]
-        if use_avg_rev_per_MWh:
-            stats_ac = annual_revenue_statistics('offwind-ac', n, bus)
-            hg_per_mw_ac = get_hourly_generation_per_MW('offwind-ac', n)
-            avg_annual_gen_per_MW_ac = hg_per_mw_ac.sum().values[0] / 9  # Total generation per MW divided by number of years
-            strike_price_ac = stats_ac["mean"] / avg_annual_gen_per_MW_ac  # Average revenue per MWh
-            # print(f"Using average revenue per MWh as AC strike price: {strike_price_ac:.2f} €/MWh")
-        rev_year_per_MW_with_CfD_ac = (strike_price_ac * hg_ac_year_per_mw.values.flatten()).sum()
-        # For 'offwind-dc'
-        hg_dc_per_mw = get_hourly_generation_per_MW('offwind-dc', n)
-        hg_dc_year_per_mw = hg_dc_per_mw[hg_dc_per_mw.index.year == year]
-        if use_avg_rev_per_MWh:
-            stats_dc = annual_revenue_statistics('offwind-dc', n, bus)
-            hg_per_mw_dc = get_hourly_generation_per_MW('offwind-dc', n)
-            avg_annual_gen_per_MW_dc = hg_per_mw_dc.sum().values[0] / 9  # Total generation per MW divided by number of years
-            strike_price_dc = stats_dc["mean"] / avg_annual_gen_per_MW_dc  # Average revenue per MWh
-            # print(f"Using average revenue per MWh as DC strike price: {strike_price_dc:.2f} €/MWh")
-        rev_year_per_MW_with_CfD_dc = (strike_price_dc * hg_dc_year_per_mw.values.flatten()).sum()
-        # For 'offwind-float'
-        hg_float_per_mw = get_hourly_generation_per_MW('offwind-float', n)
-        hg_float_year_per_mw = hg_float_per_mw[hg_float_per_mw.index.year == year]
-        if use_avg_rev_per_MWh:
-            stats_float = annual_revenue_statistics('offwind-float', n, bus)
-            hg_per_mw_float = get_hourly_generation_per_MW('offwind-float', n)
-            avg_annual_gen_per_MW_float = hg_per_mw_float.sum().values[0] / 9  # Total generation per MW divided by number of years
-            strike_price_float = stats_float["mean"] / avg_annual_gen_per_MW_float  # Average revenue per MWh
-            # print(f"Using average revenue per MWh as Float strike price: {strike_price_float:.2f} €/MWh")
-        rev_year_per_MW_with_CfD_float = (strike_price_float * hg_float_year_per_mw.values.flatten()).sum()
-        # Total revenue per MW with CfD
-        p_nom_opt_ac = n.generators.p_nom_opt[n.generators.carrier == 'offwind-ac'].sum()
-        p_nom_opt_dc = n.generators.p_nom_opt[n.generators.carrier == 'offwind-dc'].sum()
-        p_nom_opt_float = n.generators.p_nom_opt[n.generators.carrier == 'offwind-float'].sum()
-        rev_year_per_MW_with_CfD = (rev_year_per_MW_with_CfD_ac * p_nom_opt_ac + rev_year_per_MW_with_CfD_dc * p_nom_opt_dc + rev_year_per_MW_with_CfD_float * p_nom_opt_float) / (p_nom_opt_ac + p_nom_opt_dc + p_nom_opt_float)
-    else:
-        hourly_generation_per_MW = get_hourly_generation_per_MW(carrier, n)
-        hourly_generation_year_per_MW = hourly_generation_per_MW[hourly_generation_per_MW.index.year == year]
-        if use_avg_rev_per_MWh:
-            stats = annual_revenue_statistics(carrier, n, bus)
-            hg_per_mw = get_hourly_generation_per_MW(carrier, n)
-            avg_annual_gen_per_MW = hg_per_mw.sum().values[0] / 9  # Total generation per MW divided by number of years
-            strike_price = stats["mean"] / avg_annual_gen_per_MW  # Average revenue per MWh
-            # print(f"Using average revenue per MWh as strike price: {strike_price:.2f} €/MWh")
-        # Revenue calculation with CfD
-        rev_year_per_MW_with_CfD = (strike_price * hourly_generation_year_per_MW.values.flatten()).sum()
-    return rev_year_per_MW_with_CfD
 
 
 # Annual Revenue Statistics with CfD for a given carrier and rc across all years
@@ -1573,7 +1412,7 @@ def annual_revenue_statistics_mcs(run_name, carrier, n, rc, T=0, N=10000, scenar
             T = 20
         else:
             T = 25
-    if scenario in ['mb', 'pb', 'pi', 'cb']:
+    if scenario in ['mb', 'pc', 'pb', 'pi', 'cb']:
         revenues = lifetime_revenues_mcs_per_MW(run_name, n, carrier, rc, T=T, N=N, scenario=scenario)
         wacc = wacc_updated(run_name, n, carrier, rc, T=T, N=N, scenario=scenario)
     else:
@@ -1594,19 +1433,98 @@ def annual_revenue_statistics_mcs(run_name, carrier, n, rc, T=0, N=10000, scenar
 # Table of revenue statistics with and without CfD for a given carrier and rc
 def revenue_statistics_comparison(run_name, carrier, n, rc, T=0, N=10000, bus="DE0 0"):
     stats_mb = annual_revenue_statistics_mcs(run_name, carrier, n, rc, T=T, N=N, scenario='mb', bus=bus)
+    stats_pc = annual_revenue_statistics_mcs(run_name, carrier, n, rc, T=T, N=N, scenario='pc', bus=bus)
     stats_pb = annual_revenue_statistics_mcs(run_name, carrier, n, rc, T=T, N=N, scenario='pb', bus=bus)
     stats_pi = annual_revenue_statistics_mcs(run_name, carrier, n, rc, T=T, N=N, scenario='pi', bus=bus)
     stats_cb = annual_revenue_statistics_mcs(run_name, carrier, n, rc, T=T, N=N, scenario='cb', bus=bus)
     carrier_name = carrier_full_name(carrier)
     print(f"Revenue Statistics for {carrier_name}, Resource Class {rc}:")
-    print(f"{'Statistic':<10} {'Market (€)':<18} {'PB CfD (€)':<18} {'PI CfD (€)':<18} {'CB CfD (€)':<18}")
+    print(f"{'Statistic':<10} {'Market (€)':<18} {'Price Cap (€)':<18} {'PB CfD (€)':<18} {'PI CfD (€)':<18} {'CB CfD (€)':<18}")
     for key in stats_mb.keys():
-        print(f"{key:<10} {stats_mb[key]:<18.4f} {stats_pb[key]:<18.4f} {stats_pi[key]:<18.4f} {stats_cb[key]:<18.4f}")
-    return {'mb': stats_mb, 'pb': stats_pb, 'pi': stats_pi, 'cb': stats_cb}
+        print(f"{key:<10} {stats_mb[key]:<18.4f} {stats_pc[key]:<18.4f} {stats_pb[key]:<18.4f} {stats_pi[key]:<18.4f} {stats_cb[key]:<18.4f}")
+    return {'mb': stats_mb, 'pc': stats_pc, 'pb': stats_pb, 'pi': stats_pi, 'cb': stats_cb}
 
 
 
 # ___ Plots of revenue statistics ___
+
+# Plot lost revenue due to price cap over price cap levels for a given carrier and rc
+def plot_lost_revenue_due_to_price_cap(run_name, carrier, n, rc, cap_min=80, cap_max=200, bus="DE0 0", save_to_file=True):
+    costs = get_costs(run_name)
+    years = n.generators_t.p.index.year.unique()
+    rev_per_mw = sum([annual_revenue_per_MW(costs, carrier, year, n, rc, bus=bus) for year in years])
+    cap_values = np.linspace(cap_min, cap_max, 13)
+    lost_revenue_pct = []
+    for cap in cap_values:
+        rev_per_mw_capped = sum([annual_revenue_per_MW_with_price_cap(costs, carrier, year, n, rc, bus=bus, cap=cap) for year in years])
+        lost_revenue_pct.append((rev_per_mw - rev_per_mw_capped) / rev_per_mw * 100 if rev_per_mw != 0 else np.nan)
+    plt.figure(figsize=(10, 6))
+    color = color_theme(carrier)
+    plt.plot(cap_values, lost_revenue_pct, 'o-', color=color)
+    plt.xlabel('Price Cap [€/MWh]')
+    plt.ylabel('Lost Revenue (%)')
+    plt.title(f'Lost Revenue Due to Price Cap for {carrier_full_name(carrier)}, RC {rc}')
+    plt.grid(True)
+    if save_to_file:
+        results_directory = f'../results/{run_name}'
+        output_dir = f'{results_directory}/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/lost_revenue_due_to_price_cap_{carrier}_{rc}_{int(cap_min)}_{int(cap_max)}.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
+
+# Plot effective higher WACC due to price cap over price cap levels for a given carrier and rc
+def plot_effective_risk_premium_due_to_price_cap(run_name, carrier, n, rc, cap_min=80, cap_max=200, T=0, bus="DE0 0", save_to_file=True):
+    if T == 0:
+        if carrier == 'solar' or carrier == 'solar-hsat':
+            T = 40
+        elif carrier == 'offwind' or carrier == 'offwind-ac' or carrier == 'offwind-dc' or carrier == 'onwind':
+            T = 30
+        elif carrier == 'offwind-float':
+            T = 20
+        else:
+            T = 25
+    costs = get_costs(run_name)
+    years = n.generators_t.p.index.year.unique()
+    rev_per_mw = sum([annual_revenue_per_MW(costs, carrier, year, n, rc, bus=bus) for year in years])
+    cap_values = np.linspace(cap_min, cap_max, 13)
+    if carrier == 'offwind-ac' or carrier == 'offwind-dc':
+        carkey = 'offwind'
+    elif carrier == 'solar-hsat':
+        carkey = 'solar-utility single-axis tracking'
+    else:
+        carkey = carrier
+    ann_old = n.generators.capital_cost[f"DE0 0 {rc} {carrier}"] / (costs.at[carkey, "investment"] * T) - costs.at[carkey, "FOM"] / 100
+    wacc_old = annuity_to_wacc(ann_old, T if T > 0 else costs.at[carkey, "lifetime"])
+    effective_risk_premium = []
+    for cap in cap_values:
+        rev_per_mw_capped = sum([annual_revenue_per_MW_with_price_cap(costs, carrier, year, n, rc, bus=bus, cap=cap) for year in years])
+        pct_rev_loss = (rev_per_mw - rev_per_mw_capped) / rev_per_mw if rev_per_mw != 0 else np.nan
+        ann_new = n.generators.capital_cost[f"DE0 0 {rc} {carrier}"] / ((1 - pct_rev_loss) * costs.at[carkey, "investment"] * T) - costs.at[carkey, "FOM"] / 100
+        wacc_new = annuity_to_wacc(ann_new, T if T > 0 else costs.at[carkey, "lifetime"])
+        effective_risk_premium.append(wacc_new - wacc_old)
+    plt.figure(figsize=(10, 6))
+    color = color_theme(carrier)
+    plt.plot(cap_values, effective_risk_premium, 'o-', color=color)
+    plt.xlabel('Price Cap [€/MWh]')
+    plt.ylabel('Effective Risk Premium')
+    plt.title(f'Effective Risk Premium Due to Price Cap for {carrier_full_name(carrier)}, RC {rc}')
+    plt.grid(True)
+    if save_to_file:
+        results_directory = f'../results/{run_name}'
+        output_dir = f'{results_directory}/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/effective_risk_premium_due_to_price_cap_{carrier}_{rc}_{int(cap_min)}_{int(cap_max)}.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
 
 # Plot WACC (IRR) vs. revenue volatility
 def plot_wacc_vs_volatility(sigma_max=0.5, save_to_file=True):
@@ -1636,35 +1554,104 @@ def plot_wacc_vs_volatility(sigma_max=0.5, save_to_file=True):
         plt.show()
 
 
+# Scenario Name Mapping for Plot Titles
+def scenario_name_mapping(scenario):
+    mapping = {
+        'mb': 'Direct Marketing',
+        'pb': 'a Production-Based CfD',
+        'pi': 'a Production-Independent CfD',
+        'cb': 'a Capacity-Based CfD'
+    }
+    return mapping.get(scenario, scenario)
+
+
 # Plot annual revenue of a carrier for all years
-def plot_annual_revenue_per_MW(carrier, run_name, scenario, bus="DE0 0", save_to_file=True):
+def plot_annual_revenue_per_MW(run_name, scenario, carrier, rc, bus="DE0 0", save_to_file=True):
     n = get_network(run_name)
     years = n.generators_t.p.index.year.unique()
-    revenues = [annual_revenue_per_MW(carrier, year, n, bus) for year in years]
-    plt.figure(figsize=(10, 6))
-    color = colormap_for_carrier(carrier)
-    # Convert 'Blues', 'Greens' etc. to a single color for points, or just use a default
-    # For points we probably want a specific color intensity, not a colormap (unless by value)
-    # Mapping old custom colors to simple standard ones if colormap_for_carrier returns strings
-    c_map_val = 'blue'
-    if carrier == 'offwind': c_map_val = 'blue'
-    elif carrier == 'onwind': c_map_val = 'green'
-    elif carrier == 'solar': c_map_val = 'orange'
-    elif carrier == 'solar rooftop': c_map_val = 'red'
+    costs = get_costs(run_name)
+    if scenario == 'mb':
+        revenues = [annual_revenue_per_MW(costs, carrier, year, n, rc) for year in years]
+    elif scenario == 'pb':
+        sp = strike_price_PB(costs, carrier, n, rc)
+        revenues = [annual_revenue_PB_per_MW(costs, carrier, year, n, rc, strike_price=sp, bus=bus) for year in years]
+    elif scenario == 'pi':
+        sp = strike_price_PI(costs, carrier, n, rc)
+        revenues = [annual_revenue_PI_per_MW(costs, carrier, year, n, rc, strike_price=sp, bus=bus) for year in years]
+    elif scenario == 'cb':
+        sp = strike_price_CB(costs, carrier, n, rc)
+        revenues = [annual_revenue_CB_per_MW(costs, carrier, year, n, rc, strike_price=sp, bus=bus) for year in years]
+    else:
+        print(f"Error: Scenario {scenario} not recognized.")
+        return
     
-    plt.plot(years, revenues, 'o', color=c_map_val) # Points
-    plt.axhline(y=np.mean(revenues), color='black', linestyle='--')
+    # Divide into quintiles
+    n_years = len(years)
+    q_size = n_years // 5
+    
+    # First quintile (high prices)
+    low_idx = list(range(0, q_size))
+    low_revenues = [revenues[i] for i in low_idx]
+    low_years = [years[i] for i in low_idx]
+    low_mean = np.mean(low_revenues)
+    
+    # Middle three quintiles (average)
+    avg_idx = list(range(q_size, 4 * q_size))
+    avg_revenues = [revenues[i] for i in avg_idx]
+    avg_years = [years[i] for i in avg_idx]
+    avg_mean = np.mean(avg_revenues)
+    
+    # Fifth quintile (low prices)
+    high_idx = list(range(4 * q_size, n_years))
+    high_revenues = [revenues[i] for i in high_idx]
+    high_years = [years[i] for i in high_idx]
+    high_mean = np.mean(high_revenues)
+    
+    plt.figure(figsize=(10, 6))
+    color = color_theme(carrier)    
+    plt.plot(years, revenues, 'o', color=color) # Points
+    
+    # Draw mean lines only in their respective sections
+    plt.plot([min(high_years), max(high_years)], [high_mean, high_mean], color='black', linestyle='--', linewidth=2)
+    plt.plot([min(avg_years), max(avg_years)], [avg_mean, avg_mean], color='black', linestyle='--', linewidth=2)
+    plt.plot([min(low_years), max(low_years)], [low_mean, low_mean], color='black', linestyle='--', linewidth=2)
+
+    # Draw thin vertical lines between sections
+    x_sep_1 = (max(low_years) + min(avg_years)) / 2
+    x_sep_2 = (max(avg_years) + min(high_years)) / 2
+    plt.axvline(x=x_sep_1, color='black', linestyle='-', linewidth=1)
+    plt.axvline(x=x_sep_2, color='black', linestyle='-', linewidth=1)
+    
     carrier_name = carrier_full_name(carrier)
-    plt.title(f'Annual Revenue of {carrier_name} per MW installed capacity')
+    scenario_name = scenario_name_mapping(scenario)
+    plt.title(f'Annual Revenue of {carrier_name} (RC {rc}) per MW Installed Capacity for {scenario_name}')
     plt.xlabel('Weather Year')
     plt.ylabel('Annual Revenue [€] per MW installed capacity')
-    plt.ylim(0, 1.02*np.max(revenues))  # Set y-axis limit slightly above max revenue for better visualization
+    plt.ylim(0.9*np.min(revenues), 1.15*np.max(revenues))  # Set y-axis limit slightly above max revenue for better visualization
+    ymin, ymax = plt.ylim()
+
+    def fmt_thousands_dot(x):
+        return f"{x:,.0f}".replace(",", ".")
+
+    # Section labels with average annual revenues
+    plt.text(np.mean(low_years)-0.5, ymax * 0.99, 
+             rf"Low Gas Price Years" + "\n" + rf"$\overline{{R_t}}={fmt_thousands_dot(low_mean)}\,\mathrm{{€/MW}}$", 
+             ha='center', va='top', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+    plt.text(np.mean(avg_years), ymax * 0.99, 
+             rf"Average Gas Price Years" + "\n" + rf"$\overline{{R_t}}={fmt_thousands_dot(avg_mean)}\,\mathrm{{€/MW}}$", 
+             ha='center', va='top', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+    plt.text(np.mean(high_years)+0.5, ymax * 0.99, 
+             rf"High Gas Price Years" + "\n" + rf"$\overline{{R_t}}={fmt_thousands_dot(high_mean)}\,\mathrm{{€/MW}}$", 
+             ha='center', va='top', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+
+    # Thousands separators for y-axis tick labels
+    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_thousands_dot(x)))
     plt.grid(True)
     if save_to_file:
-        results_directory = f'results/{run_name}'
+        results_directory = f'../results/{run_name}'
         output_dir = f'{results_directory}/my_plots'
         os.makedirs(output_dir, exist_ok=True)
-        filename = f'{output_dir}/annual_revenue_per_MW_{carrier}_{scenario}.png'
+        filename = f'{output_dir}/annual_revenue_per_MW_{carrier}_{rc}_{scenario}.png'
         plt.savefig(filename, bbox_inches='tight')
         plt.close()
         print(f'Plot saved to {filename}')
@@ -1719,14 +1706,16 @@ def lifetime_revenue_mcs_dist_plot(run_name, scenario, carrier, N=10000, save_to
     plt.figure(figsize=(10,6))
     
     # Plot histogram with density=True to assist with fitting
-    plt.hist(flat_data, bins=50, color=color_theme(carrier), edgecolor='black', density=True, alpha=0.6, label='Histogram ($\sigma$={:.4f})'.format(np.std(flat_data)))
+    data_range = float(np.max(flat_data) - np.min(flat_data))
+    n_bins = max(20, int(140 * data_range))
+    plt.hist(flat_data, bins=n_bins, color=color_theme(carrier), edgecolor='black', density=True, alpha=0.6, label='Histogram ($\sigma$={:.4f})'.format(np.std(flat_data)))
     
     xmin, xmax = plt.xlim()
     x = np.linspace(xmin, xmax, 100)
     
     fit_stats = {}  # dict of {name: ks_stat} for best-fit comparison
     
-    if scenario == 'mb':
+    if scenario == 'mb' or scenario == 'pc':
         # --- Log-Normal Distribution (market-based scenario) ---
         shape, loc, scale = lognorm.fit(flat_data)
         p_lognorm = lognorm.pdf(x, shape, loc, scale)
@@ -1738,19 +1727,21 @@ def lifetime_revenue_mcs_dist_plot(run_name, scenario, carrier, N=10000, save_to
         df_t, loc_t, scale_t = student_t.fit(flat_data)
         p_t = student_t.pdf(x, df_t, loc_t, scale_t)
         ks_stat_t, p_val_t = kstest(flat_data, 't', args=(df_t, loc_t, scale_t))
-        plt.plot(x, p_t, 'm:', linewidth=2, label=f"Student's t (KS = {ks_stat_t:.4f}, df = {df_t:.1f})")
+        plt.plot(x, p_t, 'm:', linewidth=2, label=f"Student's t (KS = {ks_stat_t:.4f},\n df = {df_t:.1f}, scale = {scale_t:.4f})")
         fit_stats["Student's t"] = ks_stat_t
 
-        # --- Johnson SU Distribution (CfD scenarios) ---
-        a_jsu, b_jsu, loc_jsu, scale_jsu = johnsonsu.fit(flat_data)
-        p_jsu = johnsonsu.pdf(x, a_jsu, b_jsu, loc_jsu, scale_jsu)
-        ks_stat_jsu, p_val_jsu = kstest(flat_data, 'johnsonsu', args=(a_jsu, b_jsu, loc_jsu, scale_jsu))
-        plt.plot(x, p_jsu, 'c-', linewidth=2, label=f'Johnson SU (KS = {ks_stat_jsu:.4f})')
-        fit_stats['Johnson SU'] = ks_stat_jsu
+        # # --- Johnson SU Distribution (CfD scenarios) ---
+        # a_jsu, b_jsu, loc_jsu, scale_jsu = johnsonsu.fit(flat_data)
+        # p_jsu = johnsonsu.pdf(x, a_jsu, b_jsu, loc_jsu, scale_jsu)
+        # ks_stat_jsu, p_val_jsu = kstest(flat_data, 'johnsonsu', args=(a_jsu, b_jsu, loc_jsu, scale_jsu))
+        # plt.plot(x, p_jsu, 'c-', linewidth=2, label=f'Johnson SU (KS = {ks_stat_jsu:.4f})')
+        # fit_stats['Johnson SU'] = ks_stat_jsu
 
-    plt.title(f'Lifetime Normalized Revenue Distribution for {gen_name} over {t} years')
+    scenario_name = scenario_name_mapping(scenario)
+    plt.title(f'Lifetime Normalized Revenue Distribution for {gen_name} over {t} years for {scenario_name}')
     plt.xlabel('Lifetime Normalized Revenue')
     plt.ylabel('Frequency')
+    plt.xlim(0.7, 1.4)
     plt.grid(axis='y', alpha=0.75)
     plt.legend()
     if save_to_file:
@@ -1766,11 +1757,11 @@ def lifetime_revenue_mcs_dist_plot(run_name, scenario, carrier, N=10000, save_to
     
     # Print Test Results
     print(f"--- Goodness of Fit Results for {gen_name} ---")
-    if scenario == 'mb':
+    if scenario == 'mb' or scenario == 'pc':
         print(f"Log-Normal:  KS Stat = {ks_stat_lognorm:.4f}, p-value = {p_val_lognorm:.4e}")
     else:
         print(f"Student's t: KS Stat = {ks_stat_t:.4f}, p-value = {p_val_t:.4e} (df = {df_t:.1f})")
-        print(f"Johnson SU:  KS Stat = {ks_stat_jsu:.4f}, p-value = {p_val_jsu:.4e}")
+        # print(f"Johnson SU:  KS Stat = {ks_stat_jsu:.4f}, p-value = {p_val_jsu:.4e}")
     
     best_fit = min(fit_stats, key=fit_stats.get)
     print(f"-> The {best_fit} distribution fits the data best (lowest KS statistic).\n")
@@ -1813,115 +1804,73 @@ def plot_roi_per_rc(run_name, carrier, N=10000, save_to_file=True):
 
 
 # Plot lifetime risk for all resource classes of a carrier
-def plot_lifetime_risk_per_rc(run_name, carrier, N=10000, save_to_file=True, scenario='mb'):
+def plot_lifetime_risk_per_rc(run_name, carrier, T=0, N=10000, save_to_file=True, scenarios=['mb', 'pc', 'pb', 'pi', 'cb']):
     n = get_network(run_name)
+    if T == 0:
+        if carrier == 'solar' or carrier == 'solar-hsat':
+            T = 40
+        elif carrier == 'offwind' or carrier == 'offwind-ac' or carrier == 'offwind-dc' or carrier == 'onwind':
+            T = 30
+        elif carrier == 'offwind-float':
+            T = 20
+        else:
+            T = 25
+
     n_rc_actual = n.generators.index[n.generators.carrier == carrier].size
     n_rc = n_rc_actual if n_rc_actual > 0 else 1
-    risks = []
-    for rc in range(n_rc):
-        rev_mcs = lifetime_revenues_mcs_per_MW(run_name, n, carrier, rc, N=N, scenario=scenario)
-        if rev_mcs is not None:
-            risk = np.std(rev_mcs) / np.mean(rev_mcs) if np.mean(rev_mcs) != 0 else np.nan
-            risks.append(risk * 100)  # Convert to percentage
-        else:
-            risks.append(np.nan)
+    rc_values = list(range(n_rc))
+
+    scenario_colors = {
+        'mb': cm_5,
+        'pc': cm_6,
+        'pb': cm_1,
+        'pi': cm_2,
+        'cb': cm_3,
+    }
+    scenario_labels = {
+        'mb': 'Direct Marketing',
+        'pc': 'DM with Price Cap',
+        'pb': 'Production-based CfD',
+        'pi': 'Production-independent CfD',
+        'cb': 'Capacity-based CfD',
+    }
+
     plt.figure(figsize=(10, 6))
-    color = color_theme(carrier)
-    plt.plot(range(n_rc), risks, 'o', color=color, markeredgecolor='black')
-    # plt.axhline(y=np.mean(risks), color='black', linestyle='--')
+    all_valid_risks = []
+
+    for scenario in scenarios:
+        risks = []
+        for rc in rc_values:
+            rev_mcs = lifetime_revenues_mcs_per_MW(run_name, n, carrier, rc, T=T, N=N, scenario=scenario)
+            if rev_mcs is None:
+                risks.append(np.nan)
+                continue
+            mean_rev = np.mean(rev_mcs)
+            risk = np.std(rev_mcs) / mean_rev if mean_rev != 0 else np.nan
+            risk_pct = risk * 100 if np.isfinite(risk) else np.nan
+            risks.append(risk_pct)
+            if np.isfinite(risk_pct):
+                all_valid_risks.append(risk_pct)
+
+        color = scenario_colors.get(scenario, color_theme(carrier))
+        label = scenario_labels.get(scenario, scenario)
+        plt.plot(rc_values, risks, 'o-', color=color, markeredgecolor='black', linewidth=1.8, label=label)
+
     carrier_name = carrier_full_name(carrier)
     plt.title(rf'Lifetime Revenue Risk $\frac{{\sigma}}{{\mu}}$ of {carrier_name} per Resource Class')
     plt.xlabel('Resource Class')
-    plt.xticks(range(n_rc))
+    plt.xticks(rc_values)
     plt.ylabel('Lifetime Revenue Risk [%]')
-    valid_risks = [r for r in risks if np.isfinite(r)]
-    if valid_risks:
-        plt.ylim(0.0, 1.2 * np.max(valid_risks))  # Set y-axis limit slightly above max risk for better visualization
+    if all_valid_risks:
+        plt.ylim(0.0, 1.2 * np.max(all_valid_risks))
     plt.grid(True)
-    if save_to_file:
-        results_directory = f'../results/{run_name}'
-        output_dir = f'{results_directory}/my_plots'
-        os.makedirs(output_dir, exist_ok=True)
-        filename = f'{output_dir}/lifetime_risk_per_resource_class_{carrier}.png'
-        plt.savefig(filename, bbox_inches='tight')
-        plt.close()
-        print(f'Plot saved to {filename}')
-    else:
-        plt.show()
-
-
-# Plot annual revenue of a carrier for all years under a standard financial CfD
-def plot_annual_revenue_per_MW_with_CfD(carrier, run_name, scenario, use_avg_rev_per_MWh=True, strike_price=0, bus="DE0 0", save_to_file=True): 
-    n = get_network(run_name)
-    years = n.generators_t.p.index.year.unique()
-    revenues = [annual_revenue_per_MW_with_CfD(carrier, year, n, use_avg_rev_per_MWh, strike_price, bus) for year in years]
-    rev_0 = [annual_revenue_per_MW(carrier, year, n, bus) for year in years]
-    plt.figure(figsize=(10, 6))
-    
-    c_map_val = 'blue'
-    if carrier == 'offwind': c_map_val = 'blue'
-    elif carrier == 'onwind': c_map_val = 'green'
-    elif carrier == 'solar': c_map_val = 'orange'
-    elif carrier == 'solar rooftop': c_map_val = 'red'
-
-    plt.plot(years, revenues, 'o', color=c_map_val) # Points
-    plt.axhline(y=np.mean(revenues), color='black', linestyle='--')
-    carrier_name = carrier_full_name(carrier)
-    plt.ylim(0, 1.02*np.max(rev_0))  # Set y-axis limit slightly above max revenue without CfD for better comparison
-    plt.title(f'Annual Revenue of {carrier_name} per MW installed capacity with a financial CfD')
-    plt.xlabel('Weather Year')
-    plt.ylabel('Annual Revenue [€] per MW installed capacity with a financial CfD')
-    plt.grid(True)
-    if save_to_file:
-        results_directory = f'../results/{run_name}'
-        output_dir = f'{results_directory}/my_plots'
-        os.makedirs(output_dir, exist_ok=True)
-        filename = f'{output_dir}/annual_revenue_per_MW_with_CfD_{carrier}_{scenario}.png'
-        plt.savefig(filename, bbox_inches='tight')
-        plt.close()
-        print(f'Plot saved to {filename}')
-    else:
-        plt.show()
-
-
-# Plot histogram of normalized distribution of annual revenues of all carriers around their average
-def plot_normalized_annual_revenue_distribution(run_name, carriers=['offwind', 'onwind', 'solar', 'solar rooftop'], bus="DE0 0", save_to_file=True):
-    n = get_network(run_name)
-    years = n.generators_t.p.index.year.unique()
-    plt.figure(figsize=(10, 6))
-    normalized_revenues = []
-    for carrier in carriers:
-        revenues = [annual_revenue_per_MW(carrier, year, n, bus) for year in years]
-        avg_revenue = np.mean(revenues)
-        normalized_revenues_carrier = [rev / avg_revenue for rev in revenues]
-        normalized_revenues.append(normalized_revenues_carrier)
-    normalized_revenues = np.array(normalized_revenues).flatten()
-    plt.hist(normalized_revenues, bins=10, alpha=0.5, label='Normalized annual revenue for all VRE', color='purple', width=0.01)
-    # Add fitted log-linear probability density
-    # count, bins, ignored = plt.hist(normalized_revenues, bins=10, density=True, alpha=0)
-    # bin_centers = 0.5 * (bins[1:] + bins[:-1])
-    # log_counts = np.log(count + 1e-10)  # Avoid log(0)
-    # fitted = np.exp(np.polyval(coeffs, bin_centers))
-    # plt.plot(bin_centers, fitted, 'r--', label='Fitted log-linear density')
-    # Fit a log-normal distribution to the normalized revenues
-    shape, loc, scale = lognorm.fit(normalized_revenues, floc=0)
-    x = np.linspace(min(normalized_revenues), max(normalized_revenues), 100)
-    pdf_fitted = lognorm.pdf(x, shape, loc=loc, scale=scale)
-    plt.plot(x, pdf_fitted, 'r--', label='Fitted log-normal density')
-    # Fit a Rayleigh distribution to the normalized revenues
-    # param = rayleigh.fit(normalized_revenues, floc=0)
-    # pdf_fitted_rayleigh = rayleigh.pdf(x, *param)
-    # plt.plot(x, pdf_fitted_rayleigh, 'g--', label='Fitted Rayleigh density')
-    plt.title('Normalized Distribution of Annual Revenues per MW installed capacity')
-    plt.xlabel('Normalized Annual Revenue (Revenue / Average Revenue)')
-    plt.ylabel('Frequency')
     plt.legend()
-    plt.grid(True)
-    if save_to_file:    
+
+    if save_to_file:
         results_directory = f'../results/{run_name}'
         output_dir = f'{results_directory}/my_plots'
         os.makedirs(output_dir, exist_ok=True)
-        filename = f'{output_dir}/normalized_annual_revenue_distribution.png'
+        filename = f'{output_dir}/lifetime_risk_per_resource_class_{carrier}_scenarios.png'
         plt.savefig(filename, bbox_inches='tight')
         plt.close()
         print(f'Plot saved to {filename}')
@@ -1930,147 +1879,460 @@ def plot_normalized_annual_revenue_distribution(run_name, carriers=['offwind', '
 
 
 # Violin plot for annual revenues for different CfD instruments
-def plot_revenue_violin(carrier, run_name, bus="DE0 0", save_to_file=True):
+def plot_revenue_violin(run_name, carrier, rc, T=0, N=10000, save_to_file=True, scenario='mb', bus="DE0 0"):
     n = get_network(run_name)
-    years = n.generators_t.p.index.year.unique()
-    all_revenues = []
-    carrier_names_map = {
-        'offwind': "Offshore Wind",
-        'onwind': "Onshore Wind",
-        'solar': "Ground-Mounted Solar PV",
-        'solar rooftop': "Rooftop Solar PV"}
-    carrier_name = carrier_names_map.get(carrier, carrier)
-    rev_no_cfd = [annual_revenue_per_MW(carrier, year, n, bus) for year in years]
-    rev_cfd = [annual_revenue_per_MW_with_CfD(carrier, year, n, bus) for year in years]
-    # rev_cap = annual_revenue_per_MW_with_Cap(carrier, year, bus) for year in years]
-    # Define data for each scenario
-    scenarios = {
-        "No CfD": rev_no_cfd,
-        "Financial CfD": rev_cfd 
-        # "Capacity Component": rev_cap # Uncomment if you have this network
-    }
-    for name, revenues in scenarios.items():
-        for revenue in revenues:
-            all_revenues.append({'run_name': name, 'revenue': revenue})
-    df = pd.DataFrame(all_revenues)
+    if T == 0:
+        if carrier == 'solar' or carrier == 'solar-hsat':
+            T = 40
+        elif carrier == 'offwind' or carrier == 'offwind-ac' or carrier == 'offwind-dc' or carrier == 'onwind':
+            T = 30
+        elif carrier == 'offwind-float':
+            T = 20
+        else:
+            T = 25
+
+    lifetime_revenues = lifetime_revenues_mcs_per_MW(run_name, n, carrier, rc, T=T, N=N, scenario=scenario)
+    
+    carrier_name = carrier_full_name(carrier)
+    scenario_name = scenario_name_mapping(scenario)
+
+    df = pd.DataFrame({'run_name': [scenario_name] * N, 'revenue': lifetime_revenues.flatten()})
     plt.figure(figsize=(10, 6))
-    carrier_colors = {
-        "Offshore Wind": mcblue,
-        "Onshore Wind": mcgreen,
-        "Ground-Mounted Solar PV": mcorange,
-        "Rooftop Solar PV": mcred}
-    color = carrier_colors.get(carrier_name, (0.5, 0.5, 0.5))  # Default to grey if not found
-    palette_colors = {name: color for name in scenarios.keys()}
-    sns.violinplot(x='run_name', y='revenue', data=df, palette=palette_colors)
-    plt.title(f'Distribution of Annual Revenues per MW installed capacity of {carrier_name}', fontsize=12)
+    
+    # Try using color_theme (as used in other plotting functions) with a fallback
+    try:
+        color = color_theme(carrier)
+    except NameError:
+        color = 'blue'
+
+    sns.violinplot(x='run_name', y='revenue', data=df, color=color)
+    plt.title(f'Distribution of Lifetime Revenues per MW of {carrier_name} for {scenario_name}', fontsize=12)
     plt.xlabel(None)
-    plt.ylabel('Annual Revenue [€] per MW installed capacity', fontsize=12)
+    plt.ylabel('Average Annual Revenue [€] per MW installed capacity', fontsize=12)
     plt.grid(True)
-    plt.ylim(0, None)  # Start y-axis at 0
+    # plt.ylim(0, None)  # Start y-axis at 0
     plt.xticks(fontsize=12)
     plt.yticks(fontsize=12)
     if save_to_file:
         results_directory = f'../results/{run_name}'
         output_dir = f'{results_directory}/my_plots'
         os.makedirs(output_dir, exist_ok=True)
-        # The filename should probably be more specific to the carrier
-        filename = f'{output_dir}/revenue_violin_plot_{carrier}.png'
+        # The filename should probably be more specific to the carrier and rc
+        filename = f'{output_dir}/revenue_violin_plot_{carrier}_rc{rc}.png'
         plt.savefig(filename, bbox_inches='tight')
         plt.close()
         print(f'Plot saved to {filename}')
     else:
         plt.show()
-
-
-
-# # ___ Cost of capital calculations ___
-
-# # Updated discount rate (i.e. WACC) assuming (simplified!) linear relation between WACC and revenue variability
-# def updated_discount_rate(carrier, n, bus="DE0 0"):
-#     base_wacc = 0.07  # Base WACC
-#     base_wacc_solar_rooftop = 0.04  # Base WACC for solar (avg. of grounded (0.07) and rooftop (0.04))
-#     risk_free_rate = 0.02  # Risk-free rate
-#     stats_without_CfD = annual_revenue_statistics(carrier, n, bus)
-#     revenue_variability_without_CfD = stats_without_CfD["std_dev"]
-#     stats_with_CfD = annual_revenue_statistics_with_CfD(carrier, n, True, 0, bus)
-#     revenue_variability_with_CfD = stats_with_CfD["std_dev"]
-#     if carrier == 'solar rooftop':
-#         updated_wacc = risk_free_rate + (base_wacc_solar_rooftop - risk_free_rate) * (revenue_variability_with_CfD / revenue_variability_without_CfD)
-#     else:
-#         updated_wacc = risk_free_rate + (base_wacc - risk_free_rate) * (revenue_variability_with_CfD / revenue_variability_without_CfD)
-#     return updated_wacc
-
-
-# # Updated annuity factor based on updated discount rate
-# def updated_capital_cost(carrier, n, bus="DE0 0"):
-#     lifetime = 0.0
-#     if carrier == 'offwind':
-#         lifetime = 30.0 # Taken from the costs_2030.csv file for offshore wind
-#     else:
-#         lifetime = n.generators.lifetime[n.generators.carrier == carrier]
-#     if carrier == 'solar rooftop':
-#         base_wacc = 0.04  # Base WACC for solar (avg. of grounded (0.07) and rooftop (0.04))
-#     else:
-#         base_wacc = 0.07  # Base WACC
-#     annuity_factor_old = (1 - (1 + base_wacc) ** -lifetime) / base_wacc
-#     wacc = updated_discount_rate(carrier, n, bus)
-#     annuity_factor_new = (1 - (1 + wacc) ** -lifetime) / wacc
-#     capital_cost = 0.0
-#     if carrier == 'offwind':
-#         capital_cost = 1682122.6 * annuity_factor_old / annuity_factor_new # Taken from the costs_2030.csv file for offshore wind
-#     else:
-#         capital_cost = n.generators.capital_cost[n.generators.carrier == carrier] * annuity_factor_old / annuity_factor_new
-#     return capital_cost
 
 
 
 # ___ Statistics on public CfD payments ___
 
-# Annual state CfD payments for a given carrier and year
-def annual_CfD_payments_per_MW(carrier, year, n, use_avg_rev_per_MWh=True, strike_price=0, bus="DE0 0"):
-    rev_without_CfD = annual_revenue_per_MW(carrier, year, n, bus)
-    rev_with_CfD = annual_revenue_per_MW_with_CfD(carrier, year, n, use_avg_rev_per_MWh, strike_price, bus)
-    payments = rev_with_CfD - rev_without_CfD
-    return payments
+# Precompute strike prices for all (carrier, rc) combinations to speed up state-payment statistics calculations
+def _precompute_state_cfd_strike_prices(costs, n, scenario, bus="DE0 0"):
+    """Compute strike prices once per (carrier, rc) for state-payment statistics."""
+    if scenario not in ['pb', 'pi', 'cb']:
+        return {}
 
+    strike_prices = {}
+    vre_carriers = ['offwind', 'offwind-ac', 'offwind-dc', 'offwind-float', 'onwind', 'solar', 'solar-hsat', 'solar rooftop']
+
+    for carrier in vre_carriers:
+        for rc in range(n.generators.index[n.generators.carrier == carrier].size):
+            if scenario == 'pb':
+                strike_prices[(carrier, rc)] = strike_price_PB(costs, carrier, n, rc, bus=bus)
+            elif scenario == 'pi':
+                strike_prices[(carrier, rc)] = strike_price_PI(costs, carrier, n, rc, bus=bus)
+            elif scenario == 'cb':
+                strike_prices[(carrier, rc)] = strike_price_CB(costs, carrier, n, rc, bus=bus)
+
+    return strike_prices
+
+
+# State CfD payments in a given scenario and year (positive for state -> operator)
+def annual_state_cfd_payments(run_name, n, year, scenario='mb', cap=130, bus="DE0 0", costs=None, strike_prices=None):
+    if scenario == 'mb':
+        return 0  # No CfD payments in market-based scenario
+    else:
+        if costs is None:
+            costs = get_costs(run_name)
+        vre_carriers = ['offwind-ac', 'offwind-dc', 'offwind-float', 'onwind', 'solar', 'solar-hsat']
+        rev_mb = 0
+        rev_sc = 0
+        for carrier in vre_carriers:
+            for rc in range(n.generators.index[n.generators.carrier == carrier].size):
+                rev_mb_stream = annual_revenue(costs, carrier, year, n, rc, bus=bus)
+                rev_mb += rev_mb_stream
+                if scenario == 'pc':
+                    rev_sc += annual_revenue_with_price_cap(costs, carrier, year, n, rc, cap=cap, bus=bus)
+                elif scenario == 'pb':
+                    sp = strike_prices[(carrier, rc)] if strike_prices is not None else strike_price_PB(costs, carrier, n, rc, bus=bus)
+                    if not np.isfinite(sp):
+                        rev_sc += rev_mb_stream
+                    else:
+                        rev_sc += annual_revenue_PB(costs, carrier, year, n, rc, strike_price=sp, bus=bus)
+                elif scenario == 'pi':
+                    sp = strike_prices[(carrier, rc)] if strike_prices is not None else strike_price_PI(costs, carrier, n, rc, bus=bus)
+                    if not np.isfinite(sp):
+                        rev_sc += rev_mb_stream
+                    else:
+                        rev_sc += annual_revenue_PI(costs, carrier, year, n, rc, strike_price=sp, bus=bus)
+                elif scenario == 'cb':
+                    sp = strike_prices[(carrier, rc)] if strike_prices is not None else strike_price_CB(costs, carrier, n, rc, bus=bus)
+                    if not np.isfinite(sp):
+                        rev_sc += rev_mb_stream
+                    else:
+                        rev_sc += annual_revenue_CB(costs, carrier, year, n, rc, strike_price=sp, bus=bus)
+        payments = rev_sc - rev_mb
+        return payments
+
+
+# Calculate annual state CfD payments for each year for a given scenario and store in a DataFrame
+def calculate_annual_state_cfd_payments(run_name, n, scenario='mb', cap=130, bus="DE0 0"):
+    years = n.generators_t.p.index.year.unique()
+    costs = get_costs(run_name)
+    strike_prices = _precompute_state_cfd_strike_prices(costs, n, scenario, bus=bus)
+    payments_data = []
+    for year in years:
+        payments = annual_state_cfd_payments(
+            run_name,
+            n,
+            year,
+            scenario=scenario,
+            cap=cap,
+            bus=bus,
+            costs=costs,
+            strike_prices=strike_prices,
+        )
+        payments_data.append({'year': year, 'payments': payments})
+    df_payments = pd.DataFrame(payments_data)
+    file_path = f'../results/{run_name}/state_cfd_payments/state_cfd_payments_{scenario}.csv'
+    os_dir = os.path.dirname(file_path)
+    if not os.path.exists(os_dir):
+        os.makedirs(os_dir, exist_ok=True)
+    df_payments.to_csv(file_path, index=False)
+    return df_payments
+
+
+# Average state CfD payments in a given scenario across all years
+def average_state_cfd_payments(run_name, n, scenario='mb', cap=130, bus="DE0 0"):
+    # Try loading from CSV first
+    file_path = f'../results/{run_name}/state_cfd_payments/state_cfd_payments_{scenario}.csv'
+    if os.path.exists(file_path):
+        df_payments = pd.read_csv(file_path)
+        if 'payments' in df_payments.columns:
+            return df_payments['payments'].mean()
+        else:
+            years = n.generators_t.p.index.year.unique()
+            costs = get_costs(run_name)
+            strike_prices = _precompute_state_cfd_strike_prices(costs, n, scenario, bus=bus)
+            total_payments = sum(
+                annual_state_cfd_payments(
+                    run_name,
+                    n,
+                    year,
+                    scenario=scenario,
+                    cap=cap,
+                    bus=bus,
+                    costs=costs,
+                    strike_prices=strike_prices,
+                )
+                for year in years
+            )
+            return total_payments / len(years) if years.size > 0 else 0
+
+
+# Standard deviation of state CfD payments in a given scenario across all years
+def std_dev_state_cfd_payments(run_name, n, scenario='mb', cap=130, bus="DE0 0"):
+    # Try loading from CSV first
+    file_path = f'../results/{run_name}/state_cfd_payments/state_cfd_payments_{scenario}.csv'
+    if os.path.exists(file_path):
+        df_payments = pd.read_csv(file_path)
+        if 'payments' in df_payments.columns:
+            return df_payments['payments'].std()
+        else:
+            years = n.generators_t.p.index.year.unique()
+            costs = get_costs(run_name)
+            strike_prices = _precompute_state_cfd_strike_prices(costs, n, scenario, bus=bus)
+            payments = [
+                annual_state_cfd_payments(
+                    run_name,
+                    n,
+                    year,
+                    scenario=scenario,
+                    cap=cap,
+                    bus=bus,
+                    costs=costs,
+                    strike_prices=strike_prices,
+                )
+                for year in years
+            ]
+            return np.std(payments)
+
+
+# Normalized standard deviation of state CfD payments (risk) in a given scenario across all years
+def risk_state_cfd_payments(run_name, n, scenario='mb', cap=130, bus="DE0 0"):
+    # Try loading from CSV first
+    file_path = f'../results/{run_name}/state_cfd_payments/state_cfd_payments_{scenario}.csv'
+    if os.path.exists(file_path):
+        df_payments = pd.read_csv(file_path)
+        if 'payments' in df_payments.columns:
+            sc = system_costs(n, bus=bus)
+            std_dev_payment = df_payments['payments'].std()
+            return std_dev_payment * len(df_payments) / sc if sc != 0 else np.nan
+    else:
+        years = n.generators_t.p.index.year.unique()
+        costs = get_costs(run_name)
+        strike_prices = _precompute_state_cfd_strike_prices(costs, n, scenario, bus=bus)
+        payments = [
+            annual_state_cfd_payments(
+                run_name,
+                n,
+                year,
+                scenario=scenario,
+                cap=cap,
+                bus=bus,
+                costs=costs,
+                strike_prices=strike_prices,
+            )
+            for year in years
+        ]
+        sc = system_costs(n, bus=bus)
+        std_dev_payment = np.std(payments)
+        return std_dev_payment / sc * len(years) if sc != 0 else np.nan
+
+
+# Aggregated market-based revenue risk across all VRE carriers
+def aggregated_revenue_std_dev(run_name, n, scenario='mb', bus="DE0 0"):
+    costs = get_costs(run_name)
+    vre_carriers = ['offwind-ac', 'offwind-dc', 'offwind-float', 'onwind', 'solar', 'solar-hsat', 'solar rooftop']
+    std_devs = 0.0
+    years = n.generators_t.p.index.year.unique()
+    if scenario != 'mb':
+        strike_price = _precompute_state_cfd_strike_prices(costs, n, scenario, bus=bus)
+    for carrier in vre_carriers:
+        for rc in range(n.generators.index[n.generators.carrier == carrier].size):
+            revs = []
+            sp = strike_price.get((carrier, rc), np.nan) if scenario != 'mb' else np.nan
+            for year in years:
+                if scenario == 'mb':
+                    rev = annual_revenue(costs, carrier, year, n, rc, bus=bus)
+                elif scenario == 'pb':
+                    rev = annual_revenue_PB(costs, carrier, year, n, rc, strike_price=sp, bus=bus) if np.isfinite(sp) else annual_revenue(costs, carrier, year, n, rc, bus=bus)
+                elif scenario == 'pi':
+                    rev = annual_revenue_PI(costs, carrier, year, n, rc, strike_price=sp, bus=bus) if np.isfinite(sp) else annual_revenue(costs, carrier, year, n, rc, bus=bus)
+                elif scenario == 'cb':
+                    rev = annual_revenue_CB(costs, carrier, year, n, rc, strike_price=sp, bus=bus) if np.isfinite(sp) else annual_revenue(costs, carrier, year, n, rc, bus=bus)
+                else:
+                    rev = np.nan
+                if np.isfinite(rev):
+                    revs.append(rev)
+
+            if len(revs) > 0:
+                std_devs += np.std(revs)
+    return std_devs 
+
+
+# Absolute portfolio effect for each CfD type across all years
+def portfolio_effect_abs(run_name, n, scenario='mb', bus="DE0 0"):
+    std_state = std_dev_state_cfd_payments(run_name, n, scenario, bus=bus)
+    std_agg = aggregated_revenue_std_dev(run_name, n, scenario='mb', bus=bus)
+    return std_agg - std_state
+
+
+# Relative portfolio effect for each CfD type across all years
+def portfolio_effect_pct(run_name, n, scenario='mb', bus="DE0 0"):
+    std_state = std_dev_state_cfd_payments(run_name, n, scenario, bus=bus)
+    std_agg = aggregated_revenue_std_dev(run_name, n, scenario='mb', bus=bus)
+    return (std_agg - std_state) / std_agg * 100 if std_agg != 0 else np.nan
+
+
+# Electricity price time series under a levying system for a given CfD type
+def price_time_series_with_levy(run_name, n, scenario='mb', cap=130, bus="DE0 0"):
+    years = np.array(sorted(n.generators_t.p.index.year.unique()))
+    # Try loading from CSV first
+    file_path = f'../results/{run_name}/state_cfd_payments/state_cfd_payments_{scenario}.csv'
+    if os.path.exists(file_path):
+        df_payments = pd.read_csv(file_path)
+        if {'year', 'payments'}.issubset(df_payments.columns):
+            payments_by_year = df_payments.set_index('year')['payments']
+        elif 'payments' in df_payments.columns and len(df_payments) == len(years):
+            payments_by_year = pd.Series(df_payments['payments'].to_numpy(), index=years)
+        else:
+            costs = get_costs(run_name)
+            strike_prices = _precompute_state_cfd_strike_prices(costs, n, scenario, bus=bus)
+            payments = [
+                annual_state_cfd_payments(
+                    run_name,
+                    n,
+                    year,
+                    scenario=scenario,
+                    cap=cap,
+                    bus=bus,
+                    costs=costs,
+                    strike_prices=strike_prices,
+                )
+                for year in years
+            ]
+            payments_by_year = pd.Series(payments, index=years)
+    else:
+        costs = get_costs(run_name)
+        strike_prices = _precompute_state_cfd_strike_prices(costs, n, scenario, bus=bus)
+        payments = [
+            annual_state_cfd_payments(
+                run_name,
+                n,
+                year,
+                scenario=scenario,
+                cap=cap,
+                bus=bus,
+                costs=costs,
+                strike_prices=strike_prices,
+            )
+            for year in years
+        ]
+        payments_by_year = pd.Series(payments, index=years)
+
+    prices = get_hourly_marginal_price(n, bus=bus)
+    vre_carriers = ['offwind-ac', 'offwind-dc', 'offwind-float', 'onwind', 'solar', 'solar-hsat']
+    hg_components = []
+    for carrier in vre_carriers:
+        n_rc = n.generators.index[n.generators.carrier == carrier].size
+        for rc in range(n_rc):
+            hg_components.append(get_hourly_generation(carrier, n, rc))
+
+    if hg_components:
+        hg = pd.concat(hg_components, axis=1).sum(axis=1)
+    else:
+        hg = pd.Series(0.0, index=prices.index)
+
+    avg_annual_prices = []
+    for year in years:
+        mask = hg.index.year == year
+        total_gen = hg[mask].sum()
+        if total_gen > 0:
+            payment_year = payments_by_year.loc[year] if year in payments_by_year.index else 0.0
+            avg_price = ((prices[mask] * hg[mask]).sum() + payment_year) / total_gen
+            avg_annual_prices.append(avg_price)
+        else:
+            avg_annual_prices.append(np.nan)
+
+    return pd.Series(avg_annual_prices, index=years, name='price_with_levy')
 
 
 # ___ Plots of public CfD payments statistics ___
 
-# Plot annual state CfD payments for a given carrier across all years
-def plot_annual_CfD_payments(carrier, run_name, use_avg_rev_per_MWh=True, strike_price=0, bus="DE0 0", save_to_file=True):
+# Plot annual state CfD payments across all years
+def plot_annual_state_CfD_payments(run_name, scenario='mb', cap=130, bus="DE0 0", save_to_file=True):
     n = get_network(run_name)
     years = n.generators_t.p.index.year.unique()
-    payments = [annual_CfD_payments_per_MW(carrier, year, n, use_avg_rev_per_MWh, strike_price, bus) for year in years]
+    years = np.array(sorted(years))
+
+    file_path = f'../results/{run_name}/state_cfd_payments/state_cfd_payments_{scenario}.csv'
+    if os.path.exists(file_path):
+        df_payments = pd.read_csv(file_path)
+        if {'year', 'payments'}.issubset(df_payments.columns):
+            df_payments = df_payments.sort_values('year')
+            years = df_payments['year'].to_numpy()
+            payments = df_payments['payments'].to_numpy()
+        elif 'payments' in df_payments.columns and len(df_payments) == len(years):
+            payments = df_payments['payments'].to_numpy()
+        else:
+            costs = get_costs(run_name)
+            strike_prices = _precompute_state_cfd_strike_prices(costs, n, scenario, bus=bus)
+            payments = [
+                annual_state_cfd_payments(
+                    run_name,
+                    n,
+                    year,
+                    scenario=scenario,
+                    cap=cap,
+                    bus=bus,
+                    costs=costs,
+                    strike_prices=strike_prices,
+                )
+                for year in years
+            ]
+    else:
+        costs = get_costs(run_name)
+        strike_prices = _precompute_state_cfd_strike_prices(costs, n, scenario, bus=bus)
+        payments = [
+            annual_state_cfd_payments(
+                run_name,
+                n,
+                year,
+                scenario=scenario,
+                cap=cap,
+                bus=bus,
+                costs=costs,
+                strike_prices=strike_prices,
+            )
+            for year in years
+        ]
+
+    # Divide into quintiles
+    n_years = len(years)
+    q_size = n_years // 5
+
+    low_idx = list(range(0, q_size))
+    low_payments = [payments[i] for i in low_idx]
+    low_years = [years[i] for i in low_idx]
+    low_mean = np.mean(low_payments)
+
+    avg_idx = list(range(q_size, 4 * q_size))
+    avg_payments = [payments[i] for i in avg_idx]
+    avg_years = [years[i] for i in avg_idx]
+    avg_mean = np.mean(avg_payments)
+
+    high_idx = list(range(4 * q_size, n_years))
+    high_payments = [payments[i] for i in high_idx]
+    high_years = [years[i] for i in high_idx]
+    high_mean = np.mean(high_payments)
+
     plt.figure(figsize=(10, 6))
-    color = ''
-    if carrier == 'offwind':
-        color = mcblue
-    elif carrier == 'onwind':
-        color = mcgreen
-    elif carrier == 'solar':
-        color = mcorange
-    elif carrier == 'solar rooftop':
-        color = mcred
-    plt.bar(years, payments, color=color, alpha=0.7)
-    carrier_name = ""
-    if carrier == 'offwind':
-        carrier_name = "Offshore Wind"
-    elif carrier == 'onwind':
-        carrier_name = "Onshore Wind"
-    elif carrier == 'solar':
-        carrier_name = "Ground-Mounted Solar PV"
-    elif carrier == 'solar rooftop':
-        carrier_name = "Rooftop Solar PV"
-    plt.title(f'Annual State CfD Payments for {carrier_name} per MW installed capacity')
+    color = cm_4
+    plt.plot(years, payments, 'o', color=color)
+
+    # Draw mean lines only in their respective sections
+    plt.plot([min(high_years), max(high_years)], [high_mean, high_mean], color='black', linestyle='--', linewidth=2)
+    plt.plot([min(avg_years), max(avg_years)], [avg_mean, avg_mean], color='black', linestyle='--', linewidth=2)
+    plt.plot([min(low_years), max(low_years)], [low_mean, low_mean], color='black', linestyle='--', linewidth=2)
+
+    # Draw thin vertical lines between sections
+    x_sep_1 = (max(low_years) + min(avg_years)) / 2
+    x_sep_2 = (max(avg_years) + min(high_years)) / 2
+    plt.axvline(x=x_sep_1, color='black', linestyle='-', linewidth=1)
+    plt.axvline(x=x_sep_2, color='black', linestyle='-', linewidth=1)
+
+    def fmt_thousands_dot(x):
+        return f"{x:,.0f}".replace(",", ".")
+
+    scenario_name = scenario_name_mapping(scenario)
+    plt.title(f'Annual State CfD Payments for {scenario_name}')
     plt.xlabel('Weather Year')
-    plt.ylabel('Annual State CfD Payments [€] per MW installed capacity')
+    plt.ylabel('Annual State CfD Payments [€]')
+    plt.ylim(0.9 * np.min(payments), 1.15 * np.max(payments))
+    ymin, ymax = plt.ylim()
+
+    # Section labels with average annual payments
+    plt.text(np.mean(low_years) - 0.5, ymax * 0.99,
+             rf"Low Gas Price Years" + "\n" + rf"$\overline{{P_t}}={fmt_thousands_dot(low_mean)}\,\mathrm{{€}}$",
+             ha='center', va='top', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+    plt.text(np.mean(avg_years), ymax * 0.99,
+             rf"Average Gas Price Years" + "\n" + rf"$\overline{{P_t}}={fmt_thousands_dot(avg_mean)}\,\mathrm{{€}}$",
+             ha='center', va='top', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+    plt.text(np.mean(high_years) + 0.5, ymax * 0.99,
+             rf"High Gas Price Years" + "\n" + rf"$\overline{{P_t}}={fmt_thousands_dot(high_mean)}\,\mathrm{{€}}$",
+             ha='center', va='top', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+
+    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_thousands_dot(x)))
     plt.grid(True)
     if save_to_file:
         results_directory = f'../results/{run_name}'
         output_dir = f'{results_directory}/my_plots'
         os.makedirs(output_dir, exist_ok=True)
-        filename = f'{output_dir}/annual_CfD_payments_{carrier}.png'
+        filename = f'{output_dir}/annual_state_CfD_payments_{scenario}.png'
         plt.savefig(filename, bbox_inches='tight')
         plt.close()
         print(f'Plot saved to {filename}')
@@ -2078,10 +2340,476 @@ def plot_annual_CfD_payments(carrier, run_name, use_avg_rev_per_MWh=True, strike
         plt.show()
 
 
+# Scatterplot where for each year, aggregate wind and solar CfD payments are plotted against each other
+def plot_wind_vs_solar_cfd_payments(run_name, scenario='mb', bus="DE0 0", save_to_file=True):
+    n = get_network(run_name)
+    years = n.generators_t.p.index.year.unique()
+    years = np.array(sorted(years))
+    costs = get_costs(run_name)
+    strike_prices = _precompute_state_cfd_strike_prices(costs, n, scenario, bus=bus)
+
+    wind_payments = []
+    solar_payments = []
+
+    for year in years:
+        wind_pay = 0
+        solar_pay = 0
+        
+        for carrier in ['onwind', 'offwind-ac', 'offwind-dc', 'offwind-float']:
+            for rc in range(n.generators.index[n.generators.carrier == carrier].size):
+                rev_mb = annual_revenue(costs, carrier, year, n, rc, bus=bus)
+                rev_sc = 0
+                if scenario == 'pb':
+                    sp = strike_prices[(carrier, rc)]
+                    rev_sc = annual_revenue_PB(costs, carrier, year, n, rc, strike_price=strike_prices[(carrier, rc)], bus=bus) if np.isfinite(sp) else rev_mb
+                elif scenario == 'pi':
+                    sp = strike_prices[(carrier, rc)]
+                    rev_sc = annual_revenue_PI(costs, carrier, year, n, rc, strike_price=strike_prices[(carrier, rc)], bus=bus) if np.isfinite(sp) else rev_mb
+                elif scenario == 'cb':
+                    sp = strike_prices[(carrier, rc)]
+                    rev_sc = annual_revenue_CB(costs, carrier, year, n, rc, strike_price=strike_prices[(carrier, rc)], bus=bus) if np.isfinite(sp) else rev_mb
+                wind_pay += rev_mb - rev_sc
+        
+        for carrier in ['solar', 'solar-hsat']:
+            for rc in range(n.generators.index[n.generators.carrier == carrier].size):
+                rev_mb = annual_revenue(costs, carrier, year, n, rc, bus=bus)
+                rev_sc = 0
+                if scenario == 'pb':
+                    sp = strike_prices[(carrier, rc)]
+                    rev_sc = annual_revenue_PB(costs, carrier, year, n, rc, strike_price=strike_prices[(carrier, rc)], bus=bus) if np.isfinite(sp) else rev_mb
+                elif scenario == 'pi':
+                    sp = strike_prices[(carrier, rc)]
+                    rev_sc = annual_revenue_PI(costs, carrier, year, n, rc, strike_price=strike_prices[(carrier, rc)], bus=bus) if np.isfinite(sp) else rev_mb
+                elif scenario == 'cb':
+                    sp = strike_prices[(carrier, rc)]
+                    rev_sc = annual_revenue_CB(costs, carrier, year, n, rc, strike_price=strike_prices[(carrier, rc)], bus=bus) if np.isfinite(sp) else rev_mb
+                solar_pay += rev_mb - rev_sc
+        
+        wind_payments.append(wind_pay)
+        solar_payments.append(solar_pay)
+
+    plt.figure(figsize=(10, 6))
+    plt.scatter(wind_payments, solar_payments, color=cm_4, s=100, edgecolor='black')
+    
+    # Fit a linear regression line
+    z = np.polyfit(wind_payments, solar_payments, 1)
+    p = np.poly1d(z)
+    x_line = np.linspace(min(wind_payments), max(wind_payments), 100)
+    plt.plot(x_line, p(x_line), 'k--', linewidth=2, label=f'Linear fit: y={z[0]:.2f}x+{z[1]:.2e}')
+    
+    # Add thin lines at x=0 and y=0 to highlight quadrants
+    plt.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
+    plt.axvline(x=0, color='black', linestyle='-', linewidth=0.8)
+    
+    plt.xlabel('Annual Wind CfD Payments [billion €]')
+    plt.ylabel('Annual Solar CfD Payments [billion €]')
+    scenario_name = scenario_name_mapping(scenario)
+    plt.title(f'Wind vs. Solar State CfD Payments for {scenario_name}')
+    plt.grid(True)
+    plt.legend(loc='upper left')
+
+    def fmt_thousands_dot(x):
+        return f"{x/1e9:,.2f}".replace(",", ".")
+
+    plt.gca().xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_thousands_dot(x)))
+    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_thousands_dot(x)))
+    if save_to_file:
+        results_directory = f'../results/{run_name}'
+        output_dir = f'{results_directory}/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/wind_vs_solar_cfd_payments_{scenario}.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
+
+# Plot average annual electricity price for all CfD types as well as no CfD across all years
+def plot_avg_price_with_levy(run_name, scenarios=['mb', 'pb', 'pi', 'cb'], cap=130, bus="DE0 0", save_to_file=True):
+    n = get_network(run_name)
+    plt.figure(figsize=(10, 6))
+    scenario_colors = {
+        'mb': cm_1,
+        'pc': cm_4,
+        'pb': cm_2,
+        'pi': cm_3,
+        'cb': cm_5
+    }
+    scenario_names = {
+        'mb': 'Direct Marketing',
+        'pb': 'Production-Based CfD',
+        'pi': 'Production-Independent CfD',
+        'cb': 'Capacity-Based CfD'
+    }
+
+    years = np.array(sorted(n.generators_t.p.index.year.unique()))
+    n_years = len(years)
+    q_size = n_years // 5
+
+    low_idx = list(range(0, q_size))
+    avg_idx = list(range(q_size, 4 * q_size))
+    high_idx = list(range(4 * q_size, n_years))
+    mb_section_means = None
+    total_avg_price = None
+
+    for scenario in scenarios:
+        price_series = price_time_series_with_levy(run_name, n, scenario=scenario, cap=cap, bus=bus)
+        scenario_name = scenario_names.get(scenario, scenario_name_mapping(scenario))
+        price_std = np.nanstd(price_series.values)
+        legend_label = f"{scenario_name} ($\\sigma={price_std:.1f}\\,\\mathrm{{€/MWh}}$)"
+        color = scenario_colors.get(scenario, 'blue')
+        plt.plot(price_series.index, price_series.values, marker='o', label=legend_label, color=color)
+
+        if scenario == 'mb':
+            total_avg_price = np.nanmean(price_series.values)
+            # Mark average prices in low/average/high gas-price year sectors.
+            if q_size > 0 and len(high_idx) > 0:
+                low_mean = np.nanmean(price_series.values[low_idx])
+                avg_mean = np.nanmean(price_series.values[avg_idx])
+                high_mean = np.nanmean(price_series.values[high_idx])
+                mb_section_means = (low_mean, avg_mean, high_mean)
+
+                plt.ylim(0.8 * min(price_series.values), 1.1 * max(price_series.values))
+                plt.plot([years[low_idx[0]], years[low_idx[-1]]], [low_mean, low_mean], color='black', linestyle='--', linewidth=1.8)
+                plt.plot([years[avg_idx[0]], years[avg_idx[-1]]], [avg_mean, avg_mean], color='black', linestyle='--', linewidth=1.8)
+                plt.plot([years[high_idx[0]], years[high_idx[-1]]], [high_mean, high_mean], color='black', linestyle='--', linewidth=1.8)
+        elif total_avg_price is None:
+            total_avg_price = np.nanmean(price_series.values)
+            
+    
+    if q_size > 0 and len(high_idx) > 0:
+        x_sep_1 = (years[low_idx[-1]] + years[avg_idx[0]]) / 2
+        x_sep_2 = (years[avg_idx[-1]] + years[high_idx[0]]) / 2
+        plt.axvline(x=x_sep_1, color='black', linestyle='-', linewidth=1)
+        plt.axvline(x=x_sep_2, color='black', linestyle='-', linewidth=1)
+
+        ymin, ymax = plt.ylim()
+        if mb_section_means is not None:
+            low_mean, avg_mean, high_mean = mb_section_means
+            low_label = f"Low Gas Price Years\n$\\overline{{p_t}}={low_mean:.1f}\\,\\mathrm{{€/MWh}}$"
+            avg_label = f"Average Gas Price Years\n$\\overline{{p_t}}={avg_mean:.1f}\\,\\mathrm{{€/MWh}}$"
+            high_label = f"High Gas Price Years\n$\\overline{{p_t}}={high_mean:.1f}\\,\\mathrm{{€/MWh}}$"
+        else:
+            low_label = 'Low Gas Price Years'
+            avg_label = 'Average Gas Price Years'
+            high_label = 'High Gas Price Years'
+
+        plt.text(np.mean(years[low_idx]), ymin*1.25, low_label, ha='center', va='top', fontsize=10,
+                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+        plt.text(np.mean(years[avg_idx]), ymin*1.25, avg_label, ha='center', va='top', fontsize=10,
+                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+        plt.text(np.mean(years[high_idx]), ymin*1.25, high_label, ha='center', va='top', fontsize=10,
+                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+
+    if total_avg_price is not None:
+        _, ymax = plt.ylim()
+        total_label = f"Total Average Price: $\\overline{{p_t}}={total_avg_price:.1f}\\,\\mathrm{{€/MWh}}$"
+        plt.text(np.mean(years), ymax * 0.75, total_label, ha='center', va='top', fontsize=11,
+                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.7))
+
+    plt.xlabel('Year')
+    plt.ylabel('Average Annual Electricity Price with Levy [€/MWh]')
+    plt.title('Average Annual Electricity Price with Levy Across Scenarios')
+    plt.grid(True)
+    plt.legend(loc='upper left')
+    if save_to_file:
+        results_directory = f'../results/{run_name}'
+        output_dir = f'{results_directory}/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/avg_price_with_levy.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
+
+# ___ CO2 Emissions Calculation ___
+
+# Function to calculate annual CO2 emissions
+def annual_CO2_emissions(costs, n, year):
+    total_emissions = 0
+    fossil_carriers = n.carriers.loc[n.carriers['co2_emissions'] > 0.0].index.tolist()
+    for carrier in fossil_carriers:
+        if carrier == 'OCGT' or carrier == 'CCGT':
+            carkey = 'gas'
+        else:
+            carkey = carrier
+        co2_intensity = costs.at[carkey, 'CO2 intensity']
+        efficiency = costs.at[carrier, 'efficiency']
+        if efficiency != efficiency or pd.isna(efficiency):  # Check for NaN
+            efficiency = 1.0
+        hourly_generation = get_hourly_generation(carrier, n)
+        annual_generation = hourly_generation[hourly_generation.index.year == year]
+        emissions = (annual_generation.values.flatten()).sum() * co2_intensity / efficiency / 1e6  # Convert to MtCO2
+        total_emissions += emissions
+        # print(f"Emissions from {carrier} added {emissions:.2f} MtCO2.")
+    return total_emissions # Unit is MtCO2
+
+
+# Function to calculate total CO2 emissions
+def total_CO2_emissions(costs, n):
+    total_emissions = 0
+    for year in n.generators_t.p.index.year.unique():
+        total_emissions += annual_CO2_emissions(costs, n, year)
+    return total_emissions
 
 
 
 
+# ____ Plots to compare statistics across scenarios ___
+# System costs, average electricity prices, CO2 emissions, installed capacities, avg. state CfD payments and their std. dev.
+
+# Compare total system costs across scenarios in a bar chart
+def plot_compare_annualized_system_costs(run_names, scenario_labels =['Direct Marketing', 'DM with Price Cap', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], bus="DE0 0", save_to_file=True):
+    costs_list = []
+    for run_name in run_names:
+        n = get_network(run_name)
+        sc = system_costs(n, bus=bus)/35
+        costs_list.append(sc)
+
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(scenario_labels, costs_list, color=cm_1, edgecolor='black')
+    plt.xticks(fontsize=8)
+    
+    def fmt_billions_dot(x, n=0):
+        return f"{x/1e9:,.{n}f}".replace(",", ".")
+
+    plt.ylabel('Average Annual System Costs [Billion €]')
+    plt.title('Comparison of Average Annual System Costs Across Scenarios')
+    ax = plt.gca()
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_billions_dot(x, 0)))
+    ax.yaxis.offsetText.set_visible(False)
+    plt.grid(axis='y', alpha=0.75)
+    plt.ylim(0.8 * min(costs_list), 1.1 * max(costs_list))
+
+    # Add value labels on top of bars
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2.0, height * 1.01,
+             fmt_billions_dot(height, 2) + " B€", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+
+    if save_to_file:
+        output_dir = f'../results/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/compare_system_costs.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
 
 
+# Compare average electricity prices across scenarios in a bar chart
+def plot_compare_avg_prices(run_names, scenario_labels=['Direct Marketing', 'DM with Price Cap', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], bus="DE0 0", save_to_file=True):
+    avg_prices = []
+    for run_name in run_names:
+        n = get_network(run_name)
+        avg_price = average_price_per_MWh(n, bus=bus)
+        avg_prices.append(avg_price)
 
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(scenario_labels, avg_prices, color=cm_2, edgecolor='black')
+    plt.xticks(fontsize=8)
+    
+    def fmt_euros_dot(x, n):
+        return f"{x:,.{n}f}".replace(",", ".")
+
+    plt.ylabel('Average Electricity Price [€/MWh]')
+    plt.title('Comparison of Average Electricity Prices Across Scenarios')
+    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_euros_dot(x, 0)))
+    plt.grid(axis='y', alpha=0.75)
+    plt.ylim(0.8 * min(avg_prices), 1.1 * max(avg_prices))
+
+    # Add value labels on top of bars
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2.0, height * 1.01,
+                 fmt_euros_dot(height, 2) + " €/MWh", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+
+    if save_to_file:
+        output_dir = f'../results/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/compare_avg_prices.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
+
+# Compare total CO2 emissions across scenarios in a bar chart
+def plot_compare_CO2_emissions(run_names, scenario_labels=['Direct Marketing', 'DM with Price Cap', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], bus="DE0 0", save_to_file=True):
+    emissions_list = []
+    for run_name in run_names:
+        n = get_network(run_name)
+        costs = get_costs(run_name)
+        total_emissions = total_CO2_emissions(costs, n)/35
+        emissions_list.append(total_emissions)
+
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(scenario_labels, emissions_list, color=cm_5, edgecolor='black')
+    plt.xticks(fontsize=8)
+    
+    def fmt_millions_dot(x, n):
+        return f"{x:,.{n}f}".replace(",", ".")
+
+    plt.ylabel('Average Annual CO₂ Emissions [MtCO₂]')
+    plt.title('Comparison of Average Annual CO₂ Emissions Across Scenarios')
+    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_millions_dot(x, 0)))
+    plt.grid(axis='y', alpha=0.75)
+    plt.ylim(0.8 * min(emissions_list), 1.1 * max(emissions_list))
+
+    # Add value labels on top of bars
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2.0, height * 1.01,
+                 fmt_millions_dot(height, 2) + " Mt CO₂", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+
+    if save_to_file:
+        output_dir = f'../results/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/compare_CO2_emissions.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
+
+# Compare aggregated installed VRE, gas, as well as battery capacities across scenarios in a bar chart
+def plot_compare_capacities(run_names, scenario_labels=['Direct Marketing', 'DM with Price Cap', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], bus="DE0 0", save_to_file=True):
+    vre_capacities = []
+    # gas_capacities = []
+    # bat_capacities = []
+    for run_name in run_names:
+        n = get_network(run_name)
+        vre_capacity = n.generators.p_nom_opt[n.generators.carrier.isin(['offwind-ac', 'offwind-dc', 'offwind-float', 'onwind', 'solar', 'solar-hsat'])].sum()
+        # gas_capacity = n.generators.p_nom_opt[n.generators.carrier.isin(['OCGT', 'CCGT'])].sum()
+        # bat_capacity = n.stores.e_nom_opt[n.stores.carrier == 'battery'].sum()
+        vre_capacities.append(vre_capacity)
+        # gas_capacities.append(gas_capacity)
+        # bat_capacities.append(bat_capacity)
+
+
+    x = np.arange(len(scenario_labels))
+    width = 0.35
+
+    plt.figure(figsize=(10, 6))
+    bars_vre = plt.bar(x - width/2, vre_capacities, width, label='VRE Capacity', color=cm_3, edgecolor='black')
+    # bars_gas = plt.bar(x + width/2, gas_capacities, width, label='Gas Capacity', color=cm_2, edgecolor='black')
+    # bars_bat = plt.bar(x, bat_capacities, width, label='Battery Capacity', color=cm_4, edgecolor='black')
+    plt.xticks(fontsize=8)
+
+    def fmt_gigawatts_dot(x, n):
+        return f"{x/1e3:,.{n}f}".replace(",", ".")
+
+    plt.ylabel('Installed Capacity [GW]')
+    plt.title('Comparison of Installed VRE, Gas, and Battery Capacities Across Scenarios')
+    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_gigawatts_dot(x, 0)))
+    plt.xticks(x, scenario_labels)
+    plt.grid(axis='y', alpha=0.75)
+    # plt.legend()
+    plt.ylim(0.8 * min(vre_capacities), 1.1 * max(vre_capacities))
+
+    # # Add value labels on top of bars
+    for bar in bars_vre:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2.0, height * 1.01,
+                 fmt_gigawatts_dot(height, 2) + " GW", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+    # for bar in bars_gas:
+    #     height = bar.get_height()
+    #     plt.text(bar.get_x() + bar.get_width() / 2.0, height * 1.01,
+    #              fmt_gigawatts_dot(height, 2) + " GW", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+    # for bar in bars_bat:
+    #     height = bar.get_height()
+    #     plt.text(bar.get_x() + bar.get_width() / 2.0, height * 1.01,
+    #              fmt_gigawatts_dot(height, 2) + " GW", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+    if save_to_file:
+        output_dir = f'../results/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/compare_capacities.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+
+
+# Compare average state CfD payments across scenarios in a bar chart
+# This plot is somewhat unnecessary as those are approximately zero for given strike price assumptions
+def plot_compare_avg_state_cfd_payments(run_names, scenario_labels=['Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], scenarios=['pb', 'pi', 'cb'], bus="DE0 0", save_to_file=True):
+    avg_payments = []
+    for i in range(len(run_names)):
+        n = get_network(run_names[i])
+        avg_payment = average_state_cfd_payments(run_names[i], n, scenario=scenarios[i], bus=bus)
+        avg_payments.append(avg_payment)
+
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(scenario_labels, avg_payments, color=cm_1, edgecolor='black')
+    plt.xticks(fontsize=8)
+    
+    def fmt_billions_dot(x, n=0):
+        return f"{x/1e9:,.{n}f}".replace(",", ".")
+
+    plt.ylabel('Average Annual State CfD Payments [Billion €]')
+    plt.title('Comparison of Average Annual State CfD Payments Across Scenarios')
+    ax = plt.gca()
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_billions_dot(x, 0)))
+    ax.yaxis.offsetText.set_visible(False)
+    plt.grid(axis='y', alpha=0.75)
+
+    # Add value labels on top of bars
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2.0, height * 1.01,
+             fmt_billions_dot(height, 2) + " B€", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+
+    if save_to_file:
+        output_dir = f'../results/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/compare_avg_state_cfd_payments.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
+
+# Compare std dev of state CfD payments across scenarios in a bar chart
+def plot_compare_std_dev_state_cfd_payments(run_names, scenario_labels=['Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], scenarios=['pb', 'pi', 'cb'], bus="DE0 0", save_to_file=True):
+    std_devs = []
+    for i in range(len(run_names)):
+        n = get_network(run_names[i])
+        std_dev = std_dev_state_cfd_payments(run_names[i], n, scenario=scenarios[i], bus=bus)
+        std_devs.append(std_dev)
+
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(scenario_labels, std_devs, color=cm_2, edgecolor='black')
+    plt.xticks(fontsize=8)
+    
+    def fmt_billions_dot(x, n=0):
+        return f"{x/1e9:,.{n}f}".replace(",", ".")
+
+    plt.ylabel('Standard Deviation of Annual State CfD Payments [Billion €]')
+    plt.title('Comparison of Standard Deviation of Annual State CfD Payments Across Scenarios')
+    ax = plt.gca()
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_billions_dot(x, 2)))
+    ax.yaxis.offsetText.set_visible(False)
+    plt.grid(axis='y', alpha=0.75)
+    plt.ylim(0.8 * min(std_devs), 1.1 * max(std_devs))
+
+    # Add value labels on top of bars
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2.0, height * 1.01,
+             fmt_billions_dot(height, 2) + " B€", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+
+    if save_to_file:
+        output_dir = f'../results/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/compare_std_dev_state_cfd_payments.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()

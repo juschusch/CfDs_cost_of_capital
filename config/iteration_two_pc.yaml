@@ -1,5 +1,4 @@
-# Version Iteration Zero No VOLL: like iteration zero v3 but without VOLL
-# -> Does not yield substantially different results from the version with VOLL
+# Version Iteration Two: like iteration zero v3 but with updated WACCs based on revenue variability with CfDs
 
 # Iteration zero: Default discount rate of 0.07 as WACC for all resource classes 
 # Iteration one: calibrated WACC for all rcs based on revenue variability without CfDs 
@@ -16,7 +15,7 @@ logging:
 solve_network: solve
 
 run: 
-  name: "0_Iteration_Zero_No_VOLL"
+  name: "2_Iteration_Two_PC"
   scenarios:
     enable: false
   shared_cutouts: true 
@@ -57,12 +56,12 @@ enable:
 
 electricity:
   extendable_carriers:
-    Generator: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, OCGT, CCGT, coal, lignite] #, load] #, geothermal, biomass]
+    Generator: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, OCGT, CCGT, coal, lignite, load] #, geothermal, biomass]
     StorageUnit: [battery, H2]
     Store: [] # No charging/discharging limtis
     Link: [H2 pipeline]
   # custom_powerplants: data/custom_powerplants.csv # Used to add custom existing generators in brownfield models
-  everywhere_powerplants: #[load] #nuclear, oil, OCGT, CCGT, coal, lignite] # Adds generators with zero capacity at every node, important to make them extendable
+  everywhere_powerplants: [load] #nuclear, oil, OCGT, CCGT, coal, lignite] # Adds generators with zero capacity at every node, important to make them extendable
   conventional_carriers: [geothermal, biomass] # Adds existing conventional power plants from as lower bound powerplants.csv
   renewable_carriers: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, hydro] # Includes listed renewable generator types in optimization
 
@@ -127,66 +126,66 @@ costs:
   # Update WACC based on reduced revenue variability due to CfDs
   # fill_values:
   #   discount rate: 0.07
-  # overwrites: 
-  #   discount rate:
-  #     onwind:
-  #       DE0 0 0: 0.03
-  #       DE0 0 1: 0.03
-  #       DE0 0 2: 0.03
-  #       DE0 0 3: 0.04
-  #       DE0 0 4: 0.04
-  #       DE0 0 5: 0.04
-  #       DE0 0 6: 0.05
-  #       DE0 0 7: 0.05
-  #       DE0 0 8: 0.05
-  #       DE0 0 9: 0.07
-  #     offwind-ac:
-  #       DE0 0 0: 0.04
-  #       DE0 0 1: 0.04
-  #       DE0 0 2: 0.04
-  #       DE0 0 3: 0.04
-  #     offwind-dc:
-  #       DE0 0 0: 0.04
-  #       DE0 0 1: 0.04
-  #       DE0 0 2: 0.04
-  #       DE0 0 3: 0.04
-  #     offwind-float:
-  #       DE0 0 0: 0.04
-  #       DE0 0 1: 0.04
-  #       DE0 0 2: 0.04
-  #       DE0 0 3: 0.04
-  #     solar:
-  #       DE0 0 0: 0.04
-  #       DE0 0 1: 0.04
-  #       DE0 0 2: 0.04
-  #       DE0 0 3: 0.04
-  #       DE0 0 4: 0.04
-  #       DE0 0 5: 0.04
-  #       DE0 0 6: 0.04
-  #       DE0 0 7: 0.04
-  #       DE0 0 8: 0.04
-  #       DE0 0 9: 0.04
-  #     solar-hsat:
-  #       DE0 0 0: 0.04
-  #       DE0 0 1: 0.04
-  #       DE0 0 2: 0.04
-  #       DE0 0 3: 0.04
-  #       DE0 0 4: 0.04
-  #       DE0 0 5: 0.04
-  #       DE0 0 6: 0.04
-  #       DE0 0 7: 0.04
-  #       DE0 0 8: 0.04
-  #       DE0 0 9: 0.04
-  # capital_cost:
-  #   load: 0.0 # To prevent load shedding costs
+  overwrites: 
+    discount rate:
+      onwind:
+        DE0 0 0: 0.0619859024090185
+        DE0 0 1: 0.06133466955206371
+        DE0 0 2: 0.06130816997672734
+        DE0 0 3: 0.06083442922208621
+        DE0 0 4: 0.06006773704726025
+        DE0 0 5: 0.05979768413611552
+        DE0 0 6: 0.059838243884842546
+        DE0 0 7: 0.05973067810728621
+        DE0 0 8: 0.05967681266762427
+        DE0 0 9: 0.059870789990157776
+      offwind-ac:
+        DE0 0 0: 0.06622475759501611
+        DE0 0 1: 0.06647486632051536
+        DE0 0 2: 0.0665923932231409
+        DE0 0 3: 0.07
+      offwind-dc:
+        DE0 0 0: 0.07
+        DE0 0 1: 0.06799779989495612
+        DE0 0 2: 0.06610029797430018
+        DE0 0 3: 0.06650506497491457
+      offwind-float:
+        DE0 0 0: 0.07116821733561861
+        DE0 0 1: 0.07157075450969674
+        DE0 0 2: 0.07260397220467707
+        DE0 0 3: 0.07132961591008707
+      solar:
+        DE0 0 0: 0.053022259278679144
+        DE0 0 1: 0.052908980846079576
+        DE0 0 2: 0.05287499866692187
+        DE0 0 3: 0.05283609590882102
+        DE0 0 4: 0.05274968209630509
+        DE0 0 5: 0.052784010656434156
+        DE0 0 6: 0.05286516575361124
+        DE0 0 7: 0.05280017147048713
+        DE0 0 8: 0.052756241319513106
+        DE0 0 9: 0.05298411163441708
+      solar-hsat:
+        DE0 0 0: 0.05327706801484637
+        DE0 0 1: 0.05313737563809979
+        DE0 0 2: 0.053115603512632906
+        DE0 0 3: 0.05308566562740214
+        DE0 0 4: 0.05300881030549808
+        DE0 0 5: 0.05303181120990485
+        DE0 0 6: 0.05311516628994399
+        DE0 0 7: 0.05299413127944825
+        DE0 0 8: 0.05295829461479486
+        DE0 0 9: 0.05322895653763159
+  capital_cost:
+    load: 0.0 # To prevent load shedding costs
   #   onwind: 976588.612835
   #   offwind-ac: 1.385671e+06
   #   offwind-dc: 1.451712e+06
   #   offwind-float: 2.002911e+06
   #   solar: 335421.439964
   #   solar-hsat: 347953.594898
-  # marginal_cost:
-  #   load: 4000.0 # Value of Lost Load (VoLL) to prevent very high scarcity prices, here set to 4000 €/MWh to reflect the technical limit on EU electricity markets
+  marginal_cost:
+    load: 4000.0 # Value of Lost Load (VoLL) to prevent very high scarcity prices, here set to 4000 €/MWh to reflect the technical limit on EU electricity markets
   emission_prices:
     enable: true
     co2: 100

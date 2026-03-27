@@ -6,7 +6,7 @@ To implement (in that order)
 - (Check) Different scenarios for commodity prices (percentage change simultaneously for all)
 - (Check) Value of Lost Load (VoLL) to prevent very high scarcity prices -> add custom generator with zero investment and VOLL marginal cost
 - (Optional) demand elasticity for a smoother price duration curve: https://www.sciencedirect.com/science/article/pii/S014098832500307X
-- (Optional) Demand data from the ENTSO-E ERAA dataset (Demand Data/Gross demand/DE00_Demand_gross_2030.csv) (There will be someone at YEEES who works on realistic demand curve projections)
+- (Check) Demand data from the ENTSO-E ERAA dataset (Demand Data/Gross demand/DE00_Demand_gross_2030.csv) (There will be someone at YEEES who works on realistic demand curve projections)
 - (Check) Zeroth model iteration for initial cost of capital assumption
 - (Check) Statistical sampling of aggregate returns from annual returns via random walk between commodity price years
 - (Discarded) Analytic formulas for strike prices from Silkes paper (https://doi.org/10.1016/j.reseneeco.2025.101495) -> effectively regionalized pay-as-clear auctions 
@@ -15,13 +15,16 @@ To implement (in that order)
 - (Check) Fix optimal onshore wind values
 - (Check) Fix offshore potentials
 - (Check) Regionalized adaptation of capital costs
-- First model iteration
-- Calculation of MCS-based CfD revenues
-- Second Model iteration for different CfD regimes
-- Fix CO2 emission calculation
-- Let it run for different CO2 prices to check development of importance of CfDs in the ongoing transition
+- (Check) First model iteration
+- (Check) Calculation of MCS-based CfD revenues
+- (Check) Second Model iteration for different CfD regimes
+- (Check) Fix CO2 emission calculation
+- (Check) Let it run for different CO2 prices to check development of importance of CfDs in the ongoing transition
+- (Check) Implement hourly revenue cap of 130 €/MWh in high gas price years to represent political risk 
+- Effect of price cap on total consumer prices
+- Plot system costs 
+- Discuss sensitivities: CO2 price & VOLL
 - Consumer rent and a possible levying system
-(- Systemic effect different for nodal pricing model?)
 
 
 Contribute to PyPSA-EUR (after finishing the paper):

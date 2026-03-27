@@ -2003,23 +2003,23 @@ def add_storage_and_grids(
             new_gas_pipes = pd.DataFrame(augmentation, columns=["bus0", "bus1"])
             new_gas_pipes["length"] = new_gas_pipes.apply(haversine, axis=1, args=(n,))
 
-                new_gas_pipes.index = new_gas_pipes.apply(
-                    lambda x: f"gas pipeline new {x.bus0} <-> {x.bus1}", axis=1
-                )
+            new_gas_pipes.index = new_gas_pipes.apply(
+                lambda x: f"gas pipeline new {x.bus0} <-> {x.bus1}", axis=1
+            )
 
-                n.add(
-                    "Link",
-                    new_gas_pipes.index,
-                    bus0=new_gas_pipes.bus0 + " gas",
-                    bus1=new_gas_pipes.bus1 + " gas",
-                    p_min_pu=-1,  # new gas pipes are bidirectional
-                    p_nom_extendable=True,
-                    length=new_gas_pipes.length,
-                    capital_cost=new_gas_pipes.length
-                    * costs.at["CH4 (g) pipeline", "capital_cost"],
-                    carrier="gas pipeline new",
-                    lifetime=costs.at["CH4 (g) pipeline", "lifetime"],
-                )
+            n.add(
+                "Link",
+                new_gas_pipes.index,
+                bus0=new_gas_pipes.bus0 + " gas",
+                bus1=new_gas_pipes.bus1 + " gas",
+                p_min_pu=-1,  # new gas pipes are bidirectional
+                p_nom_extendable=True,
+                length=new_gas_pipes.length,
+                capital_cost=new_gas_pipes.length
+                * costs.at["CH4 (g) pipeline", "capital_cost"],
+                carrier="gas pipeline new",
+                lifetime=costs.at["CH4 (g) pipeline", "lifetime"],
+            )
 
     if options["H2_retrofit"]:
         logger.info("Add retrofitting options of existing CH4 pipes to H2 pipes.")
