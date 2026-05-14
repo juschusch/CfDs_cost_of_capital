@@ -42,3 +42,5 @@ Workflow for electricity-only network optimization:
 Discount rate update for elec-only: add_electricity.py directly takes capital_cost from costs_2030.csv, not the discount rates 
 
 Discuss price risk as main unpredictable long-term uncertainty for investors 
+
+Risikoabsicherungsmechanismus auf staatlicher Seite in EEG-Novelle nachschauen

@@ -180,6 +180,17 @@ def get_hourly_marginal_price(n, bus="DE0 0"):
     return price_t
 
 
+# Average market value of a carrier 
+def average_market_value_for_carrier(n, carrier, bus="DE0 0"):
+    price_t = get_hourly_marginal_price(n, bus)
+    generation_t = n.generators_t.p.loc[:, n.generators.carrier == carrier]
+    total_generation = generation_t.sum().sum()
+    if total_generation <= 0:
+        return 0.0
+    total_revenue = generation_t.mul(price_t, axis=0).sum().sum()
+    return total_revenue / total_generation
+
+
 # Statistical quantities of marginal prices at node 'DE0 0'
 def price_statistics(n, bus="DE0 0"):
     price_t = get_hourly_marginal_price(n, bus)
@@ -275,6 +286,11 @@ def plot_price_duration_curve(run_name, bus="DE0 0", save_to_file=True):
     plt.ylim(0, 1.5*sorted_prices[int(np.ceil(0.1*len(sorted_prices)))])  # Cap y-axis at 100 €/MWh
     plt.xlim(0, len(sorted_prices))
     plt.grid(True)
+
+    def fmt(x):
+        return f"{x:,.0f}"#.replace(",", ".")
+    plt.gca().xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt(x)))
+
     if save_to_file:
         results_directory = f'../results/{run_name}'
         output_dir = f'{results_directory}/my_plots'
@@ -477,10 +493,94 @@ def plot_resource_classes_map(run_name, carrier, save_to_file=True):
         print("Error: 'bin' column not found in GeoJSON file.")
         return
 
+    n = get_network(run_name)
+    profile_cf_by_bin = {}
+    profile_candidates = [
+        f"../resources/{run_name}/profile_1_{carrier}.nc",
+        f"../resources/profile_1_{carrier}.nc",
+    ]
+    for profile_file in profile_candidates:
+        if not os.path.exists(profile_file):
+            continue
+        try:
+            with xr.open_dataset(profile_file) as ds_profile:
+                if "profile" not in ds_profile:
+                    continue
+
+                cf_profile = ds_profile["profile"]
+                for dim in ["time", "year"]:
+                    if dim in cf_profile.dims:
+                        cf_profile = cf_profile.mean(dim=dim)
+
+                p_nom_max = ds_profile["p_nom_max"] if "p_nom_max" in ds_profile else None
+                if "bin" not in cf_profile.dims:
+                    continue
+
+                for b in cf_profile["bin"].values:
+                    rc = int(b)
+                    cf_bin = cf_profile.sel(bin=b)
+                    if "bus" in cf_bin.dims:
+                        if p_nom_max is not None and "bus" in p_nom_max.dims and "bin" in p_nom_max.dims:
+                            w = p_nom_max.sel(bin=b)
+                            w_eff = w.where(np.isfinite(cf_bin), 0)
+                            denom = float(w_eff.sum().values)
+                            if denom > 0:
+                                cf = float((cf_bin * w_eff).sum().values / denom)
+                            else:
+                                cf = float(cf_bin.mean().values)
+                        else:
+                            cf = float(cf_bin.mean().values)
+                    else:
+                        cf = float(cf_bin.values)
+
+                    profile_cf_by_bin[rc] = cf
+            break
+        except Exception:
+            profile_cf_by_bin = {}
+
+    bins = sorted(gdf['bin'].dropna().unique())
+    cf_labels = {}
+    for b in bins:
+        rc = int(b)
+        try:
+            if rc in profile_cf_by_bin:
+                cf = profile_cf_by_bin[rc]
+                cf_labels[rc] = f"Region {rc} ({cf:.1%})"
+                continue
+
+            gen_ids = n.generators.index[
+                (n.generators.carrier == carrier)
+                & (n.generators.index.str.contains(f" {rc} "))
+            ]
+            if len(gen_ids) == 0:
+                gen_label = f"DE0 0 {rc} {carrier}"
+                if gen_label in n.generators_t.p_max_pu.columns:
+                    gen_ids = pd.Index([gen_label])
+
+            if len(gen_ids) == 0:
+                raise KeyError(f"No generator found for carrier {carrier}, rc {rc}")
+
+            cf_t = n.generators_t.p_max_pu.loc[:, gen_ids]
+            if hasattr(n.snapshot_weightings, "generators"):
+                w = n.snapshot_weightings.generators
+                cf = float(cf_t.mul(w, axis=0).sum().sum() / (w.sum() * cf_t.shape[1]))
+            else:
+                cf = float(cf_t.mean().mean())
+            cf_labels[rc] = f"Region {rc} ({cf:.1%})"
+        except Exception:
+            cf_labels[rc] = f"Region {rc} (n/a)"
+
+    gdf = gdf.copy()
+    gdf['bin'] = gdf['bin'].astype(int)
+    gdf['bin_label'] = gdf['bin'].map(cf_labels)
+
     fig, ax = plt.subplots(figsize=(10, 10))
-    gdf.plot(column='bin', ax=ax, legend=True, cmap=colormap_for_carrier(carrier), legend_kwds={'label': "Resource Class"})
+    gdf.plot(column='bin_label', ax=ax, legend=True, cmap=colormap_for_carrier(carrier), legend_kwds={'loc': 'lower left'}, edgecolor='black', linewidth=0.5)
+    legend = ax.get_legend()
+    # if legend is not None:
+    #     legend.set_title("Potential Region\n(Avg. Capacity Factor)")
     
-    plt.title(f"Regional Resource Classes for {carrier_full_name(carrier)}")
+    plt.title(f"Potential Regions for {carrier_full_name(carrier)}\n(Average Capacity Factor in Parentheses)")
     plt.axis('off')
     
     if save_to_file:
@@ -493,6 +593,39 @@ def plot_resource_classes_map(run_name, carrier, save_to_file=True):
     else:
         plt.show()
     
+
+# Plot capacities of resource classes for a given carrier
+def plot_resource_classes_capacities(run_name, carrier, save_to_file=True):
+    n = get_network(run_name)
+    carrier_gens = n.generators.index[n.generators.carrier == carrier]
+    rc_tokens = carrier_gens.to_series().str.split().str[2]
+    resource_classes = rc_tokens.unique()
+    capacities = []
+    for rc in resource_classes:
+        gen_ids = rc_tokens.index[rc_tokens == rc]
+        if len(gen_ids) == 0:
+            gen_label = f"DE0 0 {rc} {carrier}"
+            if gen_label in n.generators_t.p_max_pu.columns:
+                gen_ids = pd.Index([gen_label])
+        cap = n.generators.p_nom_opt[gen_ids].sum() / 1e3  # Convert to GW
+        capacities.append(cap)
+    plt.figure(figsize=(8, 5))
+    plt.bar(resource_classes, capacities, color=color_theme(carrier))
+    plt.title(f'Installed Capacities by Resource Class for {carrier_full_name(carrier)} [GW]')
+    plt.ylabel('Installed Capacity [GW]')
+    plt.xticks(fontsize='small')
+    plt.grid(True)
+    if save_to_file:
+        results_directory = f'../results/{run_name}'
+        output_dir = f'{results_directory}/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/capacities_{carrier}.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
 
 
 # ___ Annual revenue statistics based on optimization run ___
@@ -1626,22 +1759,25 @@ def plot_annual_revenue_per_MW(run_name, scenario, carrier, rc, bus="DE0 0", sav
     scenario_name = scenario_name_mapping(scenario)
     plt.title(f'Annual Revenue of {carrier_name} (RC {rc}) per MW Installed Capacity for {scenario_name}')
     plt.xlabel('Weather Year')
-    plt.ylabel('Annual Revenue [€] per MW installed capacity')
+    plt.ylabel('Annual Revenue [t €] per MW installed capacity')
     plt.ylim(0.9*np.min(revenues), 1.15*np.max(revenues))  # Set y-axis limit slightly above max revenue for better visualization
     ymin, ymax = plt.ylim()
 
     def fmt_thousands_dot(x):
-        return f"{x:,.0f}".replace(",", ".")
+        return f"{x/1e3:,.1f}"#.replace(",", ".")
+
+    def fmt_million_4digits(x):
+        return f"{x / 1e6:,.4g}"
 
     # Section labels with average annual revenues
     plt.text(np.mean(low_years)-0.5, ymax * 0.99, 
-             rf"Low Gas Price Years" + "\n" + rf"$\overline{{R_t}}={fmt_thousands_dot(low_mean)}\,\mathrm{{€/MW}}$", 
+             rf"Low Gas Price Years" + "\n" + rf"$\overline{{R_t}}={fmt_thousands_dot(low_mean)}\,\mathrm{{t\,€/MW}}$", 
              ha='center', va='top', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
     plt.text(np.mean(avg_years), ymax * 0.99, 
-             rf"Average Gas Price Years" + "\n" + rf"$\overline{{R_t}}={fmt_thousands_dot(avg_mean)}\,\mathrm{{€/MW}}$", 
+             rf"Average Gas Price Years" + "\n" + rf"$\overline{{R_t}}={fmt_thousands_dot(avg_mean)}\,\mathrm{{t\,€/MW}}$", 
              ha='center', va='top', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
     plt.text(np.mean(high_years)+0.5, ymax * 0.99, 
-             rf"High Gas Price Years" + "\n" + rf"$\overline{{R_t}}={fmt_thousands_dot(high_mean)}\,\mathrm{{€/MW}}$", 
+             rf"High Gas Price Years" + "\n" + rf"$\overline{{R_t}}={fmt_thousands_dot(high_mean)}\,\mathrm{{t\,€/MW}}$", 
              ha='center', va='top', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
 
     # Thousands separators for y-axis tick labels
@@ -1847,6 +1983,9 @@ def plot_lifetime_risk_per_rc(run_name, carrier, T=0, N=10000, save_to_file=True
                 continue
             mean_rev = np.mean(rev_mcs)
             risk = np.std(rev_mcs) / mean_rev if mean_rev != 0 else np.nan
+            # if scenario == 'pc':
+            #     erp = effective_risk_premium_due_to_price_cap(run_name, carrier, n, rc, T=T)
+            #     risk += erp
             risk_pct = risk * 100 if np.isfinite(risk) else np.nan
             risks.append(risk_pct)
             if np.isfinite(risk_pct):
@@ -1857,8 +1996,8 @@ def plot_lifetime_risk_per_rc(run_name, carrier, T=0, N=10000, save_to_file=True
         plt.plot(rc_values, risks, 'o-', color=color, markeredgecolor='black', linewidth=1.8, label=label)
 
     carrier_name = carrier_full_name(carrier)
-    plt.title(rf'Lifetime Revenue Risk $\frac{{\sigma}}{{\mu}}$ of {carrier_name} per Resource Class')
-    plt.xlabel('Resource Class')
+    plt.title(rf'Lifetime Revenue Risk $\frac{{\sigma}}{{\mu}}$ of {carrier_name} per Region')
+    plt.xlabel('Region')
     plt.xticks(rc_values)
     plt.ylabel('Lifetime Revenue Risk [%]')
     if all_valid_risks:
@@ -1871,6 +2010,81 @@ def plot_lifetime_risk_per_rc(run_name, carrier, T=0, N=10000, save_to_file=True
         output_dir = f'{results_directory}/my_plots'
         os.makedirs(output_dir, exist_ok=True)
         filename = f'{output_dir}/lifetime_risk_per_resource_class_{carrier}_scenarios.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
+
+# Plot effective WACC for all resource classes of a carrier
+def plot_effective_wacc_per_rc(run_name, carrier, T=0, N=10000, save_to_file=True, scenarios=['mb', 'pc', 'pb', 'pi', 'cb']):
+    n = get_network(run_name)
+    if T == 0:
+        if carrier == 'solar' or carrier == 'solar-hsat':
+            T = 40
+        elif carrier == 'offwind' or carrier == 'offwind-ac' or carrier == 'offwind-dc' or carrier == 'onwind':
+            T = 30
+        elif carrier == 'offwind-float':
+            T = 20
+        else:
+            T = 25
+
+    n_rc_actual = n.generators.index[n.generators.carrier == carrier].size
+    n_rc = n_rc_actual if n_rc_actual > 0 else 1
+    rc_values = list(range(n_rc))
+
+    scenario_colors = {
+        'mb': cm_5,
+        'pc': cm_6,
+        'pb': cm_1,
+        'pi': cm_2,
+        'cb': cm_3,
+    }
+    scenario_labels = {
+        'mb': 'Direct Marketing',
+        'pc': 'DM with Political Risk',
+        'pb': 'Production-based CfD',
+        'pi': 'Production-independent CfD',
+        'cb': 'Capacity-based CfD',
+    }
+
+    plt.figure(figsize=(10, 6))
+    all_valid_waccs = []
+
+    for scenario in scenarios:
+        waccs = []
+        for rc in rc_values:
+            gen_label = f"DE0 0 {rc} {carrier}"
+            if gen_label in n.generators.index and n.generators.p_nom_opt[gen_label] > 0:
+                wacc = wacc_updated(run_name, n, carrier, rc, T=T, N=N, scenario=scenario)
+                wacc_pct = wacc * 100 if np.isfinite(wacc) else np.nan
+            else:
+                wacc_pct = np.nan
+            waccs.append(wacc_pct)
+            if np.isfinite(wacc_pct):
+                all_valid_waccs.append(wacc_pct)
+
+        color = scenario_colors.get(scenario, color_theme(carrier))
+        label = scenario_labels.get(scenario, scenario)
+        plt.plot(rc_values, waccs, 'o-', color=color, markeredgecolor='black', linewidth=1.8, label=label)
+
+    carrier_name = carrier_full_name(carrier)
+    plt.title(rf'Effective WACC of {carrier_name} per Region')
+    plt.xlabel('Region')
+    plt.xticks(rc_values)
+    plt.ylabel('Effective WACC [%]')
+    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:.1f}%'))
+    # if all_valid_waccs:
+    #     plt.ylim(0.9 * np.min(all_valid_waccs), 1.2 * np.max(all_valid_waccs))
+    plt.grid(True)
+    plt.legend()
+
+    if save_to_file:
+        results_directory = f'../results/{run_name}'
+        output_dir = f'{results_directory}/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/effective_wacc_per_resource_class_{carrier}_scenarios.png'
         plt.savefig(filename, bbox_inches='tight')
         plt.close()
         print(f'Plot saved to {filename}')
@@ -2043,6 +2257,34 @@ def average_state_cfd_payments(run_name, n, scenario='mb', cap=130, bus="DE0 0")
             return total_payments / len(years) if years.size > 0 else 0
 
 
+# Average absolute state CfD payments in a given scenario across all years
+def average_abs_state_cfd_payments(run_name, n, scenario='mb', cap=130, bus="DE0 0"):
+    # Try loading from CSV first
+    file_path = f'../results/{run_name}/state_cfd_payments/state_cfd_payments_{scenario}.csv'
+    if os.path.exists(file_path):
+        df_payments = pd.read_csv(file_path)
+        if 'payments' in df_payments.columns:
+            return df_payments['payments'].abs().mean()
+        else:
+            years = n.generators_t.p.index.year.unique()
+            costs = get_costs(run_name)
+            strike_prices = _precompute_state_cfd_strike_prices(costs, n, scenario, bus=bus)
+            total_abs_payments = sum(
+                abs(annual_state_cfd_payments(
+                    run_name,
+                    n,
+                    year,
+                    scenario=scenario,
+                    cap=cap,
+                    bus=bus,
+                    costs=costs,
+                    strike_prices=strike_prices,
+                ))
+                for year in years
+            )
+            return total_abs_payments / len(years) if years.size > 0 else 0
+
+
 # Standard deviation of state CfD payments in a given scenario across all years
 def std_dev_state_cfd_payments(run_name, n, scenario='mb', cap=130, bus="DE0 0"):
     # Try loading from CSV first
@@ -2195,17 +2437,18 @@ def price_time_series_with_levy(run_name, n, scenario='mb', cap=130, bus="DE0 0"
         payments_by_year = pd.Series(payments, index=years)
 
     prices = get_hourly_marginal_price(n, bus=bus)
-    vre_carriers = ['offwind-ac', 'offwind-dc', 'offwind-float', 'onwind', 'solar', 'solar-hsat']
-    hg_components = []
-    for carrier in vre_carriers:
-        n_rc = n.generators.index[n.generators.carrier == carrier].size
-        for rc in range(n_rc):
-            hg_components.append(get_hourly_generation(carrier, n, rc))
+    hg = n.generators_t.p.sum(axis=1)
+    # vre_carriers = ['offwind-ac', 'offwind-dc', 'offwind-float', 'onwind', 'solar', 'solar-hsat']
+    # hg_components = []
+    # for carrier in vre_carriers:
+    #     n_rc = n.generators.index[n.generators.carrier == carrier].size
+    #     for rc in range(n_rc):
+    #         hg_components.append(get_hourly_generation(carrier, n, rc))
 
-    if hg_components:
-        hg = pd.concat(hg_components, axis=1).sum(axis=1)
-    else:
-        hg = pd.Series(0.0, index=prices.index)
+    # if hg_components:
+    #     hg = pd.concat(hg_components, axis=1).sum(axis=1)
+    # else:
+    #     hg = pd.Series(0.0, index=prices.index)
 
     avg_annual_prices = []
     for year in years:
@@ -2305,28 +2548,48 @@ def plot_annual_state_CfD_payments(run_name, scenario='mb', cap=130, bus="DE0 0"
     plt.axvline(x=x_sep_1, color='black', linestyle='-', linewidth=1)
     plt.axvline(x=x_sep_2, color='black', linestyle='-', linewidth=1)
 
-    def fmt_thousands_dot(x):
-        return f"{x:,.0f}".replace(",", ".")
+    def fmt_billion_4digits(x, n=2):
+        return f"{x/1e9:,.{n}f}"#.replace(",", ".")
 
     scenario_name = scenario_name_mapping(scenario)
     plt.title(f'Annual State CfD Payments for {scenario_name}')
     plt.xlabel('Weather Year')
-    plt.ylabel('Annual State CfD Payments [€]')
-    plt.ylim(0.9 * np.min(payments), 1.15 * np.max(payments))
+    plt.ylabel('Annual State CfD Payments [bn €]')
+    y_min_data = np.min(payments)
+    y_max_data = np.max(payments)
+    y_range = y_max_data - y_min_data
+    if y_range == 0:
+        y_pad = max(1.0, 0.1 * abs(y_max_data))
+    else:
+        y_pad = 0.1 * y_range
+    plt.ylim(y_min_data - y_pad, 1.2 * (y_max_data + y_pad))
     ymin, ymax = plt.ylim()
 
-    # Section labels with average annual payments
-    plt.text(np.mean(low_years) - 0.5, ymax * 0.99,
-             rf"Low Gas Price Years" + "\n" + rf"$\overline{{P_t}}={fmt_thousands_dot(low_mean)}\,\mathrm{{€}}$",
+    # Section labels with average annual payments in million EUR (4 significant digits)
+    plt.text(np.mean(low_years) - 0.5, ymax * 0.97,
+             rf"Low Gas Price Years" + "\n" + rf"$\overline{{P_t}}={fmt_billion_4digits(low_mean)}\,\mathrm{{bn\,€}}$",
              ha='center', va='top', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
-    plt.text(np.mean(avg_years), ymax * 0.99,
-             rf"Average Gas Price Years" + "\n" + rf"$\overline{{P_t}}={fmt_thousands_dot(avg_mean)}\,\mathrm{{€}}$",
+    plt.text(np.mean(avg_years), ymax * 0.97,
+             rf"Average Gas Price Years" + "\n" + rf"$\overline{{P_t}}={fmt_billion_4digits(avg_mean)}\,\mathrm{{bn\,€}}$",
              ha='center', va='top', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
-    plt.text(np.mean(high_years) + 0.5, ymax * 0.99,
-             rf"High Gas Price Years" + "\n" + rf"$\overline{{P_t}}={fmt_thousands_dot(high_mean)}\,\mathrm{{€}}$",
+    plt.text(np.mean(high_years) + 0.5, ymax * 0.97,
+             rf"High Gas Price Years" + "\n" + rf"$\overline{{P_t}}={fmt_billion_4digits(high_mean)}\,\mathrm{{bn\,€}}$",
              ha='center', va='top', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
 
-    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_thousands_dot(x)))
+    total_avg_abs_payment = np.mean(np.abs(payments))
+    plt.gcf().subplots_adjust(bottom=0.16)
+    plt.gca().text(
+        0.5,
+        0.03,
+        rf"Total Average Absolute Payment: $\overline{{|P_t|}}={fmt_billion_4digits(total_avg_abs_payment)}\,\mathrm{{bn\,€}}$",
+        transform=plt.gca().transAxes,
+        ha='center',
+        va='bottom',
+        fontsize=10,
+        bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.6),
+    )
+
+    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_billion_4digits(x, n=0)))
     plt.grid(True)
     if save_to_file:
         results_directory = f'../results/{run_name}'
@@ -2355,7 +2618,7 @@ def plot_wind_vs_solar_cfd_payments(run_name, scenario='mb', bus="DE0 0", save_t
         wind_pay = 0
         solar_pay = 0
         
-        for carrier in ['onwind', 'offwind-ac', 'offwind-dc', 'offwind-float']:
+        for carrier in ['onwind'    , 'offwind-ac', 'offwind-dc', 'offwind-float']:
             for rc in range(n.generators.index[n.generators.carrier == carrier].size):
                 rev_mb = annual_revenue(costs, carrier, year, n, rc, bus=bus)
                 rev_sc = 0
@@ -2368,7 +2631,7 @@ def plot_wind_vs_solar_cfd_payments(run_name, scenario='mb', bus="DE0 0", save_t
                 elif scenario == 'cb':
                     sp = strike_prices[(carrier, rc)]
                     rev_sc = annual_revenue_CB(costs, carrier, year, n, rc, strike_price=strike_prices[(carrier, rc)], bus=bus) if np.isfinite(sp) else rev_mb
-                wind_pay += rev_mb - rev_sc
+                wind_pay += rev_sc - rev_mb
         
         for carrier in ['solar', 'solar-hsat']:
             for rc in range(n.generators.index[n.generators.carrier == carrier].size):
@@ -2383,13 +2646,27 @@ def plot_wind_vs_solar_cfd_payments(run_name, scenario='mb', bus="DE0 0", save_t
                 elif scenario == 'cb':
                     sp = strike_prices[(carrier, rc)]
                     rev_sc = annual_revenue_CB(costs, carrier, year, n, rc, strike_price=strike_prices[(carrier, rc)], bus=bus) if np.isfinite(sp) else rev_mb
-                solar_pay += rev_mb - rev_sc
+                solar_pay += rev_sc - rev_mb
         
         wind_payments.append(wind_pay)
         solar_payments.append(solar_pay)
 
+    if len(wind_payments) > 1:
+        cov_wind_solar = np.cov(wind_payments, solar_payments, ddof=1)[0, 1]
+    else:
+        cov_wind_solar = np.nan
+
+    cov_norm = cov_wind_solar / (np.std(wind_payments, ddof=1) * np.std(solar_payments, ddof=1)) if np.std(wind_payments, ddof=1) > 0 and np.std(solar_payments, ddof=1) > 0 else np.nan
+
     plt.figure(figsize=(10, 6))
-    plt.scatter(wind_payments, solar_payments, color=cm_4, s=100, edgecolor='black')
+    plt.scatter(
+        wind_payments,
+        solar_payments,
+        color=cm_4,
+        s=100,
+        edgecolor='black',
+        label=f'Annual pairs (Cov = {cov_norm:.2f})'
+    )
     
     # Fit a linear regression line
     z = np.polyfit(wind_payments, solar_payments, 1)
@@ -2409,7 +2686,7 @@ def plot_wind_vs_solar_cfd_payments(run_name, scenario='mb', bus="DE0 0", save_t
     plt.legend(loc='upper left')
 
     def fmt_thousands_dot(x):
-        return f"{x/1e9:,.2f}".replace(",", ".")
+        return f"{x/1e9:,.2f}"#.replace(",", ".")
 
     plt.gca().xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_thousands_dot(x)))
     plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_thousands_dot(x)))
@@ -2418,106 +2695,6 @@ def plot_wind_vs_solar_cfd_payments(run_name, scenario='mb', bus="DE0 0", save_t
         output_dir = f'{results_directory}/my_plots'
         os.makedirs(output_dir, exist_ok=True)
         filename = f'{output_dir}/wind_vs_solar_cfd_payments_{scenario}.png'
-        plt.savefig(filename, bbox_inches='tight')
-        plt.close()
-        print(f'Plot saved to {filename}')
-    else:
-        plt.show()
-
-
-# Plot average annual electricity price for all CfD types as well as no CfD across all years
-def plot_avg_price_with_levy(run_name, scenarios=['mb', 'pb', 'pi', 'cb'], cap=130, bus="DE0 0", save_to_file=True):
-    n = get_network(run_name)
-    plt.figure(figsize=(10, 6))
-    scenario_colors = {
-        'mb': cm_1,
-        'pc': cm_4,
-        'pb': cm_2,
-        'pi': cm_3,
-        'cb': cm_5
-    }
-    scenario_names = {
-        'mb': 'Direct Marketing',
-        'pb': 'Production-Based CfD',
-        'pi': 'Production-Independent CfD',
-        'cb': 'Capacity-Based CfD'
-    }
-
-    years = np.array(sorted(n.generators_t.p.index.year.unique()))
-    n_years = len(years)
-    q_size = n_years // 5
-
-    low_idx = list(range(0, q_size))
-    avg_idx = list(range(q_size, 4 * q_size))
-    high_idx = list(range(4 * q_size, n_years))
-    mb_section_means = None
-    total_avg_price = None
-
-    for scenario in scenarios:
-        price_series = price_time_series_with_levy(run_name, n, scenario=scenario, cap=cap, bus=bus)
-        scenario_name = scenario_names.get(scenario, scenario_name_mapping(scenario))
-        price_std = np.nanstd(price_series.values)
-        legend_label = f"{scenario_name} ($\\sigma={price_std:.1f}\\,\\mathrm{{€/MWh}}$)"
-        color = scenario_colors.get(scenario, 'blue')
-        plt.plot(price_series.index, price_series.values, marker='o', label=legend_label, color=color)
-
-        if scenario == 'mb':
-            total_avg_price = np.nanmean(price_series.values)
-            # Mark average prices in low/average/high gas-price year sectors.
-            if q_size > 0 and len(high_idx) > 0:
-                low_mean = np.nanmean(price_series.values[low_idx])
-                avg_mean = np.nanmean(price_series.values[avg_idx])
-                high_mean = np.nanmean(price_series.values[high_idx])
-                mb_section_means = (low_mean, avg_mean, high_mean)
-
-                plt.ylim(0.8 * min(price_series.values), 1.1 * max(price_series.values))
-                plt.plot([years[low_idx[0]], years[low_idx[-1]]], [low_mean, low_mean], color='black', linestyle='--', linewidth=1.8)
-                plt.plot([years[avg_idx[0]], years[avg_idx[-1]]], [avg_mean, avg_mean], color='black', linestyle='--', linewidth=1.8)
-                plt.plot([years[high_idx[0]], years[high_idx[-1]]], [high_mean, high_mean], color='black', linestyle='--', linewidth=1.8)
-        elif total_avg_price is None:
-            total_avg_price = np.nanmean(price_series.values)
-            
-    
-    if q_size > 0 and len(high_idx) > 0:
-        x_sep_1 = (years[low_idx[-1]] + years[avg_idx[0]]) / 2
-        x_sep_2 = (years[avg_idx[-1]] + years[high_idx[0]]) / 2
-        plt.axvline(x=x_sep_1, color='black', linestyle='-', linewidth=1)
-        plt.axvline(x=x_sep_2, color='black', linestyle='-', linewidth=1)
-
-        ymin, ymax = plt.ylim()
-        if mb_section_means is not None:
-            low_mean, avg_mean, high_mean = mb_section_means
-            low_label = f"Low Gas Price Years\n$\\overline{{p_t}}={low_mean:.1f}\\,\\mathrm{{€/MWh}}$"
-            avg_label = f"Average Gas Price Years\n$\\overline{{p_t}}={avg_mean:.1f}\\,\\mathrm{{€/MWh}}$"
-            high_label = f"High Gas Price Years\n$\\overline{{p_t}}={high_mean:.1f}\\,\\mathrm{{€/MWh}}$"
-        else:
-            low_label = 'Low Gas Price Years'
-            avg_label = 'Average Gas Price Years'
-            high_label = 'High Gas Price Years'
-
-        plt.text(np.mean(years[low_idx]), ymin*1.25, low_label, ha='center', va='top', fontsize=10,
-                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
-        plt.text(np.mean(years[avg_idx]), ymin*1.25, avg_label, ha='center', va='top', fontsize=10,
-                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
-        plt.text(np.mean(years[high_idx]), ymin*1.25, high_label, ha='center', va='top', fontsize=10,
-                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
-
-    if total_avg_price is not None:
-        _, ymax = plt.ylim()
-        total_label = f"Total Average Price: $\\overline{{p_t}}={total_avg_price:.1f}\\,\\mathrm{{€/MWh}}$"
-        plt.text(np.mean(years), ymax * 0.75, total_label, ha='center', va='top', fontsize=11,
-                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.7))
-
-    plt.xlabel('Year')
-    plt.ylabel('Average Annual Electricity Price with Levy [€/MWh]')
-    plt.title('Average Annual Electricity Price with Levy Across Scenarios')
-    plt.grid(True)
-    plt.legend(loc='upper left')
-    if save_to_file:
-        results_directory = f'../results/{run_name}'
-        output_dir = f'{results_directory}/my_plots'
-        os.makedirs(output_dir, exist_ok=True)
-        filename = f'{output_dir}/avg_price_with_levy.png'
         plt.savefig(filename, bbox_inches='tight')
         plt.close()
         print(f'Plot saved to {filename}')
@@ -2561,16 +2738,231 @@ def total_CO2_emissions(costs, n):
 # ____ Plots to compare statistics across scenarios ___
 # System costs, average electricity prices, CO2 emissions, installed capacities, avg. state CfD payments and their std. dev.
 
+# Compare average effective WACC (over all resource classes) for all carriers across scenarios
+def plot_compare_average_effective_wacc_all_carriers(run_name='1_Iteration_One_v2', T=0, N=10000, save_to_file=True, sensitivity=False, carriers=['onwind', 'solar', 'offwind-dc'], scenarios=['mb', 'pc', 'pb', 'pi', 'cb'], aggregate=True):
+    n = get_network(run_name)
+    scenario_labels = {
+        'mb': 'Direct Marketing',
+        'pc': 'DM with Political Risk',
+        'pb': 'Production-based CfD',
+        'pi': 'Production-independent CfD',
+        'cb': 'Capacity-based CfD',
+    }
+    scenario_colors = {
+        'mb': cm_5,
+        'pc': cm_6,
+        'pb': cm_1,
+        'pi': cm_2,
+        'cb': cm_3,
+    }
+    carrier_groups = []
+    seen_group_keys = set()
+    for carrier in carriers:
+        if aggregate and carrier in ['solar', 'solar-hsat']:
+            group_key = 'solar_agg'
+            group_label = 'Solar'
+            group_members = ['solar', 'solar-hsat']
+        elif aggregate and carrier in ['offwind', 'offwind-ac', 'offwind-dc', 'offwind-float']:
+            group_key = 'offshore_wind_agg'
+            group_label = 'Offshore Wind'
+            group_members = ['offwind-ac', 'offwind-dc', 'offwind-float']
+        else:
+            group_key = carrier
+            group_label = carrier_full_name(carrier)
+            group_members = [carrier]
+
+        if group_key not in seen_group_keys:
+            carrier_groups.append((group_key, group_label, group_members))
+            seen_group_keys.add(group_key)
+
+    plt.figure(figsize=(12, 8))
+    all_valid_waccs = []
+
+    x = np.arange(len(carrier_groups))
+    bar_width = 0.8 / max(1, len(scenarios))
+
+    for i, scenario in enumerate(scenarios):
+        avg_waccs = []
+        for _, _, group_members in carrier_groups:
+            weighted_wacc_sum = 0.0
+            total_capacity = 0.0
+
+            for carrier in group_members:
+                n_rc_actual = n.generators.index[n.generators.carrier == carrier].size
+                n_rc = n_rc_actual if n_rc_actual > 0 else 1
+
+                for rc in range(n_rc):
+                    gen_label = f"DE0 0 {rc} {carrier}"
+                    if gen_label in n.generators.index and n.generators.p_nom_opt[gen_label] > 0:
+                        wacc = wacc_updated(run_name, n, carrier, rc, T=T, N=N, scenario=scenario)
+                        if np.isfinite(wacc):
+                            cap = n.generators.p_nom_opt[gen_label]
+                            weighted_wacc_sum += (wacc * 100) * cap
+                            total_capacity += cap
+
+            avg_wacc = weighted_wacc_sum / total_capacity if total_capacity > 0 else np.nan
+            avg_waccs.append(avg_wacc)
+            if np.isfinite(avg_wacc):
+                all_valid_waccs.append(avg_wacc)
+
+        offset = (i - (len(scenarios) - 1) / 2) * bar_width
+        color = scenario_colors.get(scenario, 'gray')
+        bars = plt.bar(
+            x + offset,
+            avg_waccs,
+            width=bar_width,
+            color=color,
+            edgecolor='black',
+            linewidth=1.2,
+            label=scenario_labels.get(scenario, scenario),
+        )
+        for bar, value in zip(bars, avg_waccs):
+            if np.isfinite(value):
+                plt.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    value,
+                    f'{value:.2f}%',
+                    ha='center',
+                    va='bottom',
+                    fontsize=9,
+                )
+
+    plt.title('Average Effective WACC Across Carriers per Scenario')
+    # plt.xlabel('Carrier')
+    plt.xticks(x, [group_label for _, group_label, _ in carrier_groups])
+    plt.ylabel('Average Effective WACC [%]')
+    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:.1f}%'))
+    if all_valid_waccs:
+        plt.ylim(0.8 * np.min(all_valid_waccs), 1.3 * np.max(all_valid_waccs))
+    plt.grid(True)
+    plt.legend()#loc='upper right')
+
+    if save_to_file:
+        if sensitivity != False:
+            output_dir = f'../results/my_plots/{sensitivity}'
+        else:
+            output_dir = '../results/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/average_effective_wacc_all_carriers_scenarios.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
+
+# Compare all systemic indicators across scenarios in a single grouped bar chart
+def plot_compare_systemic_indicators(run_names, scenarios=['mb', 'pc', 'pb', 'pi', 'cb'], scenario_labels=['Direct Marketing', 'DM with Political Risk', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], cap=130, bus="DE0 0", save_to_file=True, sensitivity=False):
+    if len(run_names) != len(scenarios):
+        raise ValueError(f"Length mismatch: got {len(run_names)} run_names but {len(scenarios)} scenarios.")
+    if len(scenarios) != len(scenario_labels):
+        raise ValueError(f"Length mismatch: got {len(scenarios)} scenarios but {len(scenario_labels)} scenario_labels.")
+
+    indicator_labels = [
+        'Avg Annual System Costs',
+        'Avg Electricity Price',
+        'Avg Annual CO2 Emissions',
+        'Avg VRE Generation Share',
+        # 'Average Absolute State CfD Payments',
+    ]
+
+    indicator_values = {label: [] for label in indicator_labels}
+
+    for run_name, scenario in zip(run_names, scenarios):
+        n = get_network(run_name)
+        costs = get_costs(run_name)
+
+        avg_system_costs = system_costs(n, bus=bus) / 35
+        avg_price = average_price_per_MWh(n, bus=bus)
+        avg_co2 = total_CO2_emissions(costs, n) / 35
+        total_generation = n.generators_t.p.sum().sum()
+        vre_mask = n.generators.carrier.isin(['offwind-ac', 'offwind-dc', 'offwind-float', 'onwind', 'solar', 'solar-hsat'])
+        vre_generation = n.generators_t.p.loc[:, vre_mask].sum().sum()
+        vre_gen_share = (vre_generation / total_generation) * 100 if total_generation > 0 else np.nan
+        # avg_abs_state_payments = average_abs_state_cfd_payments(run_name, n, scenario=scenario, cap=cap, bus=bus)
+
+        indicator_values['Avg Annual System Costs'].append(avg_system_costs)
+        indicator_values['Avg Electricity Price'].append(avg_price)
+        indicator_values['Avg Annual CO2 Emissions'].append(avg_co2)
+        indicator_values['Avg VRE Generation Share'].append(vre_gen_share)
+        # indicator_values['Average Absolute State CfD Payments'].append(avg_abs_state_payments)
+
+    # Convert heterogeneous units to a common index for one-axis comparison.
+    # Baseline is Direct Marketing ('mb') if present, otherwise the first scenario.
+    baseline_idx = scenarios.index('mb') if 'mb' in scenarios else 0
+    indexed_values = {}
+    for label in indicator_labels:
+        vals = np.array(indicator_values[label], dtype=float)
+        baseline = vals[baseline_idx]
+        if np.isfinite(baseline) and baseline != 0:
+            indexed = vals / baseline * 100
+        else:
+            max_abs = np.nanmax(np.abs(vals))
+            indexed = vals / max_abs * 100 if np.isfinite(max_abs) and max_abs > 0 else np.full_like(vals, np.nan)
+        indexed_values[label] = indexed
+
+    scenario_colors = {
+        'mb': cm_5,
+        'pc': cm_6,
+        'pb': cm_1,
+        'pi': cm_2,
+        'cb': cm_3,
+    }
+
+    x = np.arange(len(indicator_labels))
+    bar_width = 0.8 / max(1, len(scenarios))
+    plt.figure(figsize=(14, 8))
+
+    for i, scenario in enumerate(scenarios):
+        scenario_series = [indexed_values[label][i] for label in indicator_labels]
+        offset = (i - (len(scenarios) - 1) / 2) * bar_width
+        plt.bar(
+            x + offset,
+            scenario_series,
+            width=bar_width,
+            color=scenario_colors.get(scenario, 'gray'),
+            edgecolor='black',
+            linewidth=1.0,
+            label=scenario_labels[i],
+        )
+
+    plt.title('Comparison of Systemic Indicators Across Scenarios')
+    plt.xticks(x, indicator_labels)#, rotation=20, ha='right')
+    plt.ylabel('Indicator Value [Index, 100 = Direct Marketing]')
+    plt.ylim(95, 105)
+    plt.yticks(np.arange(96, 105, 2))
+    # ax = plt.gca()
+    # ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:.0f}\%'))
+    plt.axhline(100, color='black', linestyle='--', linewidth=1.0)
+    plt.grid(True, which='both', axis='y', alpha=0.75)
+    plt.legend()
+
+    if save_to_file:
+        if sensitivity != False:
+            output_dir = f'../results/my_plots/{sensitivity}'
+        else:
+            output_dir = '../results/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/compare_systemic_indicators.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
+
 # Compare total system costs across scenarios in a bar chart
-def plot_compare_annualized_system_costs(run_names, scenario_labels =['Direct Marketing', 'DM with Price Cap', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], bus="DE0 0", save_to_file=True):
+def plot_compare_annualized_system_costs(run_names, scenario_labels =['Direct Marketing', 'DM with Political Risk', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], bus="DE0 0", save_to_file=True, sensitivity=False):
     costs_list = []
     for run_name in run_names:
         n = get_network(run_name)
         sc = system_costs(n, bus=bus)/35
         costs_list.append(sc)
 
+    width = 0.35
+
     plt.figure(figsize=(10, 6))
-    bars = plt.bar(scenario_labels, costs_list, color=cm_1, edgecolor='black')
+    bars = plt.bar(scenario_labels, costs_list, width, color=cm_1, edgecolor='black')
     plt.xticks(fontsize=8)
     
     def fmt_billions_dot(x, n=0):
@@ -2591,7 +2983,10 @@ def plot_compare_annualized_system_costs(run_names, scenario_labels =['Direct Ma
              fmt_billions_dot(height, 2) + " B€", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
 
     if save_to_file:
-        output_dir = f'../results/my_plots'
+        if sensitivity != False:
+            output_dir = f'../results/my_plots/{sensitivity}'
+        else:
+            output_dir = '../results/my_plots'
         os.makedirs(output_dir, exist_ok=True)
         filename = f'{output_dir}/compare_system_costs.png'
         plt.savefig(filename, bbox_inches='tight')
@@ -2602,15 +2997,17 @@ def plot_compare_annualized_system_costs(run_names, scenario_labels =['Direct Ma
 
 
 # Compare average electricity prices across scenarios in a bar chart
-def plot_compare_avg_prices(run_names, scenario_labels=['Direct Marketing', 'DM with Price Cap', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], bus="DE0 0", save_to_file=True):
+def plot_compare_avg_prices(run_names, scenario_labels=['Direct Marketing', 'DM with Political Risk', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], bus="DE0 0", save_to_file=True, sensitivity=False):
     avg_prices = []
     for run_name in run_names:
         n = get_network(run_name)
         avg_price = average_price_per_MWh(n, bus=bus)
         avg_prices.append(avg_price)
 
+    width = 0.35
+
     plt.figure(figsize=(10, 6))
-    bars = plt.bar(scenario_labels, avg_prices, color=cm_2, edgecolor='black')
+    bars = plt.bar(scenario_labels, avg_prices, width, color=cm_2, edgecolor='black')
     plt.xticks(fontsize=8)
     
     def fmt_euros_dot(x, n):
@@ -2629,7 +3026,10 @@ def plot_compare_avg_prices(run_names, scenario_labels=['Direct Marketing', 'DM 
                  fmt_euros_dot(height, 2) + " €/MWh", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
 
     if save_to_file:
-        output_dir = f'../results/my_plots'
+        if sensitivity != False:
+            output_dir = f'../results/my_plots/{sensitivity}'
+        else:
+            output_dir = '../results/my_plots'
         os.makedirs(output_dir, exist_ok=True)
         filename = f'{output_dir}/compare_avg_prices.png'
         plt.savefig(filename, bbox_inches='tight')
@@ -2640,7 +3040,7 @@ def plot_compare_avg_prices(run_names, scenario_labels=['Direct Marketing', 'DM 
 
 
 # Compare total CO2 emissions across scenarios in a bar chart
-def plot_compare_CO2_emissions(run_names, scenario_labels=['Direct Marketing', 'DM with Price Cap', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], bus="DE0 0", save_to_file=True):
+def plot_compare_CO2_emissions(run_names, scenario_labels=['Direct Marketing', 'DM with Political Risk', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], bus="DE0 0", save_to_file=True, sensitivity=False):
     emissions_list = []
     for run_name in run_names:
         n = get_network(run_name)
@@ -2648,8 +3048,10 @@ def plot_compare_CO2_emissions(run_names, scenario_labels=['Direct Marketing', '
         total_emissions = total_CO2_emissions(costs, n)/35
         emissions_list.append(total_emissions)
 
+    width = 0.35
+
     plt.figure(figsize=(10, 6))
-    bars = plt.bar(scenario_labels, emissions_list, color=cm_5, edgecolor='black')
+    bars = plt.bar(scenario_labels, emissions_list, width, color=cm_5, edgecolor='black')
     plt.xticks(fontsize=8)
     
     def fmt_millions_dot(x, n):
@@ -2668,7 +3070,10 @@ def plot_compare_CO2_emissions(run_names, scenario_labels=['Direct Marketing', '
                  fmt_millions_dot(height, 2) + " Mt CO₂", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
 
     if save_to_file:
-        output_dir = f'../results/my_plots'
+        if sensitivity != False:
+            output_dir = f'../results/my_plots/{sensitivity}'
+        else:
+            output_dir = '../results/my_plots'
         os.makedirs(output_dir, exist_ok=True)
         filename = f'{output_dir}/compare_CO2_emissions.png'
         plt.savefig(filename, bbox_inches='tight')
@@ -2679,7 +3084,7 @@ def plot_compare_CO2_emissions(run_names, scenario_labels=['Direct Marketing', '
 
 
 # Compare aggregated installed VRE, gas, as well as battery capacities across scenarios in a bar chart
-def plot_compare_capacities(run_names, scenario_labels=['Direct Marketing', 'DM with Price Cap', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], bus="DE0 0", save_to_file=True):
+def plot_compare_capacities(run_names, scenario_labels=['Direct Marketing', 'DM with Political Risk', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], bus="DE0 0", save_to_file=True, sensitivity=False):
     vre_capacities = []
     # gas_capacities = []
     # bat_capacities = []
@@ -2697,7 +3102,8 @@ def plot_compare_capacities(run_names, scenario_labels=['Direct Marketing', 'DM 
     width = 0.35
 
     plt.figure(figsize=(10, 6))
-    bars_vre = plt.bar(x - width/2, vre_capacities, width, label='VRE Capacity', color=cm_3, edgecolor='black')
+    bars_vre = plt.bar(x, vre_capacities, width, label='VRE Capacity', color=cm_3, edgecolor='black')
+    # bars_vre = plt.bar(x - width/2, vre_capacities, width, label='VRE Capacity', color=cm_3, edgecolor='black')
     # bars_gas = plt.bar(x + width/2, gas_capacities, width, label='Gas Capacity', color=cm_2, edgecolor='black')
     # bars_bat = plt.bar(x, bat_capacities, width, label='Battery Capacity', color=cm_4, edgecolor='black')
     plt.xticks(fontsize=8)
@@ -2706,7 +3112,7 @@ def plot_compare_capacities(run_names, scenario_labels=['Direct Marketing', 'DM 
         return f"{x/1e3:,.{n}f}".replace(",", ".")
 
     plt.ylabel('Installed Capacity [GW]')
-    plt.title('Comparison of Installed VRE, Gas, and Battery Capacities Across Scenarios')
+    plt.title('Comparison of Installed VRE Capacities Across Scenarios')
     plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_gigawatts_dot(x, 0)))
     plt.xticks(x, scenario_labels)
     plt.grid(axis='y', alpha=0.75)
@@ -2727,7 +3133,10 @@ def plot_compare_capacities(run_names, scenario_labels=['Direct Marketing', 'DM 
     #     plt.text(bar.get_x() + bar.get_width() / 2.0, height * 1.01,
     #              fmt_gigawatts_dot(height, 2) + " GW", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
     if save_to_file:
-        output_dir = f'../results/my_plots'
+        if sensitivity != False:
+            output_dir = f'../results/my_plots/{sensitivity}'
+        else:
+            output_dir = '../results/my_plots'
         os.makedirs(output_dir, exist_ok=True)
         filename = f'{output_dir}/compare_capacities.png'
         plt.savefig(filename, bbox_inches='tight')
@@ -2735,39 +3144,45 @@ def plot_compare_capacities(run_names, scenario_labels=['Direct Marketing', 'DM 
         print(f'Plot saved to {filename}')
 
 
-# Compare average state CfD payments across scenarios in a bar chart
-# This plot is somewhat unnecessary as those are approximately zero for given strike price assumptions
-def plot_compare_avg_state_cfd_payments(run_names, scenario_labels=['Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], scenarios=['pb', 'pi', 'cb'], bus="DE0 0", save_to_file=True):
-    avg_payments = []
-    for i in range(len(run_names)):
-        n = get_network(run_names[i])
-        avg_payment = average_state_cfd_payments(run_names[i], n, scenario=scenarios[i], bus=bus)
-        avg_payments.append(avg_payment)
+# Compare VRE generation share across scenarios in a bar chart -> stack individual VRE carrier shares 
+def plot_compare_vre_generation_share(run_names, scenario_labels=['Direct Marketing', 'DM with Political Risk', 'Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], bus="DE0 0", save_to_file=True, sensitivity=False):
+    vre_shares = []
+    for run_name in run_names:
+        n = get_network(run_name)
+        total_generation = n.generators_t.p.sum().sum()
+        vre_mask = n.generators.carrier.isin(['offwind-ac', 'offwind-dc', 'offwind-float', 'onwind', 'solar', 'solar-hsat'])
+        vre_generation = n.generators_t.p.loc[:, vre_mask].sum().sum()
+        share = (vre_generation / total_generation) * 100 if total_generation > 0 else np.nan
+        vre_shares.append(share)
+
+    width = 0.35
 
     plt.figure(figsize=(10, 6))
-    bars = plt.bar(scenario_labels, avg_payments, color=cm_1, edgecolor='black')
+    bars = plt.bar(scenario_labels, vre_shares, width, color=cm_3, edgecolor='black')
     plt.xticks(fontsize=8)
-    
-    def fmt_billions_dot(x, n=0):
-        return f"{x/1e9:,.{n}f}".replace(",", ".")
 
-    plt.ylabel('Average Annual State CfD Payments [Billion €]')
-    plt.title('Comparison of Average Annual State CfD Payments Across Scenarios')
-    ax = plt.gca()
-    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_billions_dot(x, 0)))
-    ax.yaxis.offsetText.set_visible(False)
+    def fmt_percent_dot(x, n):
+        return f"{x:.{n}f}%".replace(",", ".")
+
+    plt.ylabel('VRE Generation Share [%]')
+    plt.title('Comparison of VRE Generation Share Across Scenarios')
+    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_percent_dot(x, 0)))
     plt.grid(axis='y', alpha=0.75)
+    plt.ylim(0.8 * min(vre_shares), 1.1 * max(vre_shares))
 
     # Add value labels on top of bars
     for bar in bars:
         height = bar.get_height()
         plt.text(bar.get_x() + bar.get_width() / 2.0, height * 1.01,
-             fmt_billions_dot(height, 2) + " B€", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+                 fmt_percent_dot(height, 2), ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
 
     if save_to_file:
-        output_dir = f'../results/my_plots'
+        if sensitivity != False:
+            output_dir = f'../results/my_plots/{sensitivity}'
+        else:
+            output_dir = '../results/my_plots'
         os.makedirs(output_dir, exist_ok=True)
-        filename = f'{output_dir}/compare_avg_state_cfd_payments.png'
+        filename = f'{output_dir}/compare_vre_generation_share.png'
         plt.savefig(filename, bbox_inches='tight')
         plt.close()
         print(f'Plot saved to {filename}')
@@ -2776,15 +3191,17 @@ def plot_compare_avg_state_cfd_payments(run_names, scenario_labels=['Production-
 
 
 # Compare std dev of state CfD payments across scenarios in a bar chart
-def plot_compare_std_dev_state_cfd_payments(run_names, scenario_labels=['Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], scenarios=['pb', 'pi', 'cb'], bus="DE0 0", save_to_file=True):
+def plot_compare_std_dev_state_cfd_payments(run_names, scenario_labels=['Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], scenarios=['pb', 'pi', 'cb'], bus="DE0 0", save_to_file=True, sensitivity=False):
     std_devs = []
     for i in range(len(run_names)):
         n = get_network(run_names[i])
         std_dev = std_dev_state_cfd_payments(run_names[i], n, scenario=scenarios[i], bus=bus)
         std_devs.append(std_dev)
 
+    width = 0.35
+
     plt.figure(figsize=(10, 6))
-    bars = plt.bar(scenario_labels, std_devs, color=cm_2, edgecolor='black')
+    bars = plt.bar(scenario_labels, std_devs, width, color=cm_2, edgecolor='black')
     plt.xticks(fontsize=8)
     
     def fmt_billions_dot(x, n=0):
@@ -2805,9 +3222,179 @@ def plot_compare_std_dev_state_cfd_payments(run_names, scenario_labels=['Product
              fmt_billions_dot(height, 2) + " B€", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
 
     if save_to_file:
-        output_dir = f'../results/my_plots'
+        if sensitivity != False:
+            output_dir = f'../results/my_plots/{sensitivity}'
+        else:
+            output_dir = '../results/my_plots'
         os.makedirs(output_dir, exist_ok=True)
         filename = f'{output_dir}/compare_std_dev_state_cfd_payments.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
+
+# Plot average annual electricity price for all CfD types as well as no CfD across all years
+# This has to be adapted to be able to run sensitivity runs
+def plot_avg_price_with_levy(run_names, scenarios=['mb', 'pc', 'pb', 'pi', 'cb'], cap=130, bus="DE0 0", save_to_file=True, sensitivity=False):
+    if isinstance(run_names, str):
+        run_names = [run_names] * len(scenarios)
+    elif len(run_names) != len(scenarios):
+        raise ValueError("run_names must be a string or a list with the same length as scenarios")
+
+    n = get_network(run_names[0])
+    plt.figure(figsize=(10, 6))
+    scenario_colors = {
+        'mb': cm_5,
+        'pc': cm_6,
+        'pb': cm_1,
+        'pi': cm_2,
+        'cb': cm_3,
+    }
+    scenario_names = {
+        'mb': 'Direct Marketing',
+        'pc': 'DM with Political Risk',
+        'pb': 'Production-Based CfD',
+        'pi': 'Production-Independent CfD',
+        'cb': 'Capacity-Based CfD'
+    }
+
+    years = np.array(sorted(n.generators_t.p.index.year.unique()))
+    n_years = len(years)
+    q_size = n_years // 5
+
+    low_idx = list(range(0, q_size))
+    avg_idx = list(range(q_size, 4 * q_size))
+    high_idx = list(range(4 * q_size, n_years))
+    mb_section_means = None
+    total_avg_price = None
+
+    low_means = {}
+    avg_means = {}
+    high_means = {}
+    for run, scenario, scenario_label in zip(run_names, scenarios, scenario_names.values()):
+        n_run = get_network(run)
+        if scenario == 'pc':
+            price_series = price_time_series_with_levy(run, n_run, scenario='mb', cap=cap, bus=bus)
+            # Necessary to use 'mb' price series from 'pc' scenario because it runs with higher WACC assumptions factoring in political risk
+        else:
+            price_series = price_time_series_with_levy(run, n_run, scenario=scenario, cap=cap, bus=bus)
+        scenario_name = scenario_names.get(scenario, scenario_name_mapping(scenario))
+        price_mean = np.nanmean(price_series.values)
+        price_std = np.nanstd(price_series.values)
+        label_text = scenario_label if scenario_label else scenario_name
+        legend_label = f"{label_text} ($\\overline{{p_t}}={price_mean:.1f}\\,\\mathrm{{€/MWh}}$, $\\sigma={price_std:.1f}\\,\\mathrm{{€/MWh}}$)"
+        color = scenario_colors.get(scenario, 'blue')
+        plt.plot(price_series.index, price_series.values, marker='o', label=legend_label, color=color, markeredgecolor='black')
+
+        total_avg_price = price_mean
+        # Mark average prices in low/average/high gas-price year sectors.
+        if q_size > 0 and len(high_idx) > 0:
+            low_mean = np.nanmean(price_series.values[low_idx])
+            low_means[scenario] = low_mean
+            avg_mean = np.nanmean(price_series.values[avg_idx])
+            avg_means[scenario] = avg_mean
+            high_mean = np.nanmean(price_series.values[high_idx])
+            high_means[scenario] = high_mean
+
+        if scenario == 'mb':
+            plt.ylim(0.8 * min(price_series.values), 1.1 * max(price_series.values))
+            plt.plot([years[low_idx[0]], years[low_idx[-1]]], [low_mean, low_mean], color='black', linestyle='--', linewidth=1.8)
+            plt.plot([years[avg_idx[0]], years[avg_idx[-1]]], [avg_mean, avg_mean], color='black', linestyle='--', linewidth=1.8)
+            plt.plot([years[high_idx[0]], years[high_idx[-1]]], [high_mean, high_mean], color='black', linestyle='--', linewidth=1.8)
+        elif total_avg_price is None:
+            total_avg_price = np.nanmean(price_series.values)
+    mb_section_means = (low_means, avg_means, high_means)        
+    
+    if q_size > 0 and len(high_idx) > 0:
+        x_sep_1 = (years[low_idx[-1]] + years[avg_idx[0]]) / 2
+        x_sep_2 = (years[avg_idx[-1]] + years[high_idx[0]]) / 2
+        plt.axvline(x=x_sep_1, color='black', linestyle='-', linewidth=1)
+        plt.axvline(x=x_sep_2, color='black', linestyle='-', linewidth=1)
+
+        ymin, ymax = plt.ylim()
+        if mb_section_means is not None:
+            low_mean, avg_mean, high_mean = mb_section_means
+            low_label = f"Low Gas Price Years\nDM: $\\overline{{p_t}}={low_means['mb']:.1f}\\,\\mathrm{{€/MWh}}$\nPB: $\\overline{{p_t}}={low_means['pb']:.1f}\\,\\mathrm{{€/MWh}}$"
+            avg_label = f"Average Gas Price Years\nDM: $\\overline{{p_t}}={avg_means['mb']:.1f}\\,\\mathrm{{€/MWh}}$\nPB: $\\overline{{p_t}}={avg_means['pb']:.1f}\\,\\mathrm{{€/MWh}}$"
+            high_label = f"High Gas Price Years\nDM: $\\overline{{p_t}}={high_means['mb']:.1f}\\,\\mathrm{{€/MWh}}$\nPB: $\\overline{{p_t}}={high_means['pb']:.1f}\\,\\mathrm{{€/MWh}}$"
+        else:
+            low_label = 'Low Gas Price Years'
+            avg_label = 'Average Gas Price Years'
+            high_label = 'High Gas Price Years'
+
+        plt.text(np.mean(years[low_idx]), ymin*1.15, low_label, ha='center', va='top', fontsize=10,
+                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+        plt.text(np.mean(years[avg_idx]), ymin*1.15, avg_label, ha='center', va='top', fontsize=10,
+                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+        plt.text(np.mean(years[high_idx]), ymin*1.15, high_label, ha='center', va='top', fontsize=10,
+                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+
+    # if total_avg_price is not None:
+    #     _, ymax = plt.ylim()
+    #     total_label = f"Total Average Price: $\\overline{{p_t}}={total_avg_price:.1f}\\,\\mathrm{{€/MWh}}$"
+    #     plt.text(np.max(years), ymax * 1.0, total_label, ha='right', va='top', fontsize=11,
+    #              bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.7))
+
+    plt.xlabel('Weather Year')
+    plt.ylabel('Average Annual Electricity Price with Levy [€/MWh]')
+    plt.title('Average Annual Electricity Price with Levy Across Scenarios')
+    plt.grid(True)
+    plt.legend(loc='upper left')
+    plt.ylim(0.25 * total_avg_price, 2.25 * total_avg_price)
+    if save_to_file:
+        if sensitivity != False:
+            output_dir = f'../results/my_plots/{sensitivity}'
+        else:
+            output_dir = '../results/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/avg_price_with_levy.png'
+        plt.savefig(filename, bbox_inches='tight')
+        plt.close()
+        print(f'Plot saved to {filename}')
+    else:
+        plt.show()
+
+
+# Compare average state CfD payments across scenarios in a bar chart
+# This plot is somewhat unnecessary as those are approximately zero for given strike price assumptions
+def plot_compare_avg_state_cfd_payments(run_names, scenario_labels=['Production-based CfD', 'Production-independent CfD', 'Capacity-based CfD'], scenarios=['pb', 'pi', 'cb'], bus="DE0 0", save_to_file=True, sensitivity=False):
+    avg_payments = []
+    for i in range(len(run_names)):
+        n = get_network(run_names[i])
+        avg_payment = average_state_cfd_payments(run_names[i], n, scenario=scenarios[i], bus=bus)
+        avg_payments.append(avg_payment)
+
+    width = 0.35
+    
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(scenario_labels, avg_payments, width, color=cm_1, edgecolor='black')
+    plt.xticks(fontsize=8)
+    
+    def fmt_billions_dot(x, n=0):
+        return f"{x/1e9:,.{n}f}".replace(",", ".")
+
+    plt.ylabel('Average Annual State CfD Payments [Billion €]')
+    plt.title('Comparison of Average Annual State CfD Payments Across Scenarios')
+    ax = plt.gca()
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: fmt_billions_dot(x, 0)))
+    ax.yaxis.offsetText.set_visible(False)
+    plt.grid(axis='y', alpha=0.75)
+
+    # Add value labels on top of bars
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2.0, height * 1.01,
+             fmt_billions_dot(height, 2) + " B€", ha='center', va='bottom', fontsize=11, bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', linewidth=0.5))
+
+    if save_to_file:
+        if sensitivity != False:
+            output_dir = f'../results/my_plots/{sensitivity}'
+        else:
+            output_dir = '../results/my_plots'
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f'{output_dir}/compare_avg_state_cfd_payments.png'
         plt.savefig(filename, bbox_inches='tight')
         plt.close()
         print(f'Plot saved to {filename}')
