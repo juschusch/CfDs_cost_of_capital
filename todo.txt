@@ -21,10 +21,19 @@ To implement (in that order)
 - (Check) Fix CO2 emission calculation
 - (Check) Let it run for different CO2 prices to check development of importance of CfDs in the ongoing transition
 - (Check) Implement hourly revenue cap of 130 €/MWh in high gas price years to represent political risk 
-- Effect of price cap on total consumer prices
-- Plot system costs 
-- Discuss sensitivities: CO2 price & VOLL
-- Consumer rent and a possible levying system
+- (Check) Effect of price cap on total consumer prices
+- (Check) Plot system costs 
+- (Check) Discuss sensitivities: CO2 price & VOLL
+- (Check) Effects of levying system
+
+
+Optional further items to implement:
+- Discount rate in lifetime revenue calculation via MCS to account for inflation
+- Different probability distributions for lifetime revenues under CfDs?
+- Calculate hedging costs for the state with default interest rate
+- More realistic CO2 price sensitivities (especially 200 €/t) 
+- Co-location PV + BESS as individual generator type
+- Sensitivity for gas price variation & characteristic length of high/low gas price regimes 
 
 
 Contribute to PyPSA-EUR (after finishing the paper):
@@ -39,8 +48,5 @@ Workflow for electricity-only network optimization:
 - Analyze the resulting NC file with analysis.ipynb based on analysis_functions.py
 
 
-Discount rate update for elec-only: add_electricity.py directly takes capital_cost from costs_2030.csv, not the discount rates 
+Discount rate update for elec-only: add_electricity.py directly takes capital_cost from costs_2030.csv, not the discount rates
 
-Discuss price risk as main unpredictable long-term uncertainty for investors 
-
-Risikoabsicherungsmechanismus auf staatlicher Seite in EEG-Novelle nachschauen
