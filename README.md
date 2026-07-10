@@ -12,18 +12,18 @@ This project was used for the paper "Taming the Electricity Market RollerCOSTer 
 
 ### Overview
 
-This repository is used to model the potential impact of Contracts for Difference (CfDs) on the energy system—here on the example of the German electricity price zone. The general workflow uses three iterations:
+This repository is used to model the potential impact of Contracts for Difference (CfDs) on the long-term electricity market equilibrium via its effect on cost of capital as well as on state budget volatility and consumer prices if complemented by a levying system. Here, we use the DEU-LUX bidding zone as the case study. The general workflow uses three iterations:
 
 1. **Calibration scenario** — calculated using mostly default parameters to calibrate initial cost of capital assumptions for all generators
 2. **Reference scenario** — uses the resulting price and dispatch time series from calibration under direct marketing assumptions for all generators
-3. **CfD scenarios** — uses updated cost of capital values based on revenues under different CfD designs as inputs for the final modeling
+3. **CfD & Political Risk scenarios** — uses updated cost of capital values based on revenues under different CfD designs & price cap as inputs for the final modeling
 
 ### System Configuration
 
 The general configuration is an overnight (or "greenfield") scenario for Germany with the following specifications:
 
 #### Spatial and Temporal Setup
-- **Region:** Germany (single node, effectively ignoring transmission constraints)
+- **Region:** Germany (single node, effectively ignoring transmission constraints), split into ten regions (resource classes) of equal size for onshore wind and solar PV respectively (four for offshore wind in the maritime zone)
 - **Time period:** Weather years 1982 to 2016 (35 years of historical weather data)
 - **Snapshots:** Hourly resolution
 
@@ -35,34 +35,36 @@ The general configuration is an overnight (or "greenfield") scenario for Germany
 - OCGT, CCGT, coal, lignite
 - Batteries, hydrogen storage
 
-**Non-extendable technologies (existing capacity constraints):**
+**Non-extendable technologies:**
 - Hydro, geothermal, biomass — capped to current expansion levels
 
-#### Key Assumptions
+#### Key Changes in Assumptions
 
 - **Offshore capacity:** ~80 GW long-term potential (legal expansion target for 2045 in Germany)
   - Achieved through increased `capacity_per_sqkm` parameter (6.5 instead of default 2)
 - **CO2 price:** 100 €/t CO2eq (with sensitivity analysis)
+- **Natural Gas price:** seven weather years are assigned doubled/halved natural gas prices respectively (compared to default assumption)
 
 ### Monte Carlo Simulation and Revenue Analysis
 
-A Monte Carlo Simulation is performed across all weather years to generate a distribution of possible lifetime generator revenues under different CfD designs:
+A Monte Carlo Simulation is performed across different sequences of weather years (with assigned transition probabilities between natural gas price regimes) with length corresponding to generator lifetimes to generate a distribution of possible lifetime generator revenues in different scenarios:
 
 | Scenario | Design | Description |
 |----------|--------|-------------|
-| **mb** | Direct marketing | Market-based revenues without CfD support |
-| **pb** | Production-based CfD | Conventional CfD with production-based payment |
-| **pi** | Production-independent CfD | Financial CfD with production-independent payment |
-| **cb** | Capacity-based CfD | Capacity payment independent of actual generation |
+| **mb** | Merchant | Market-based revenues without CfD support |
+| **pc** | Merchant with Political Risk | Market-based revenues with a price cap on hourly revenues |
+| **pb** | Conventional CfD | Revenues under a conventional CfD with production-based payments |
+| **pi** | Production-based financial CfD | Financial CfD with technology average as reference profile and production-based payments |
+| **cb** | Capacity-based financial CfD | Financial CfD with technology average as reference profile, capacity-based payments from state to operators and production-based back payments |
 
 #### Cost of Capital Calculation
 
-The resulting lifetime revenue risk (std dev / mean) is used to calculate the corresponding cost of capital (WACC / discount rate) value for each technology and resource class:
+The resulting lifetime revenue risk (std dev / mean) from the Monte Carlo Simluation is used to calculate the corresponding cost of capital (WACC / discount rate) value for each technology and resource class:
 
-$$\text{WACC} = f_{irr} - \frac{\ln(1 - \text{erf}(\sigma \cdot 2^{-3/2}))}{T}$$
+$$\text{WACC} = r_f - \frac{\ln(1 - \text{erf}(\sigma \cdot 2^{-3/2}))}{T}$$
 
 where:
-- $f_{irr}$ = base risk-free rate
+- $r_f$ = base risk-free rate
 - $\sigma$ = normalized revenue volatility (risk)
 - $T$ = project lifetime (years)
 
